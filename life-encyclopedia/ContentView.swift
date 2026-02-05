@@ -2,20 +2,14 @@
 //  ContentView.swift
 //  life-encyclopedia
 //
-//  Created by Eliot Chang on 2/4/26.
+//  Main app view
 //
 
 import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        HomeView()
     }
 }
 
