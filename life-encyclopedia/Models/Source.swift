@@ -73,6 +73,8 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
     let accessDate: Date
     let reliabilityScore: Double
     let contentSnippet: String?
+    let relevantQuote: String?
+    let deepLinkURL: String?
     
     // MARK: - Coding Keys
     
@@ -87,6 +89,13 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
         case accessDate
         case reliabilityScore
         case contentSnippet
+        case relevantQuote
+        case deepLinkURL
+    }
+    
+    private enum LegacyCodingKeys: String, CodingKey {
+        case relevantQuote = "relevant_quote"
+        case deepLinkURL = "deep_link_url"
     }
     
     init(
@@ -99,7 +108,9 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
         publishDate: String? = nil,
         accessDate: Date = Date(),
         reliabilityScore: Double = 0.5,
-        contentSnippet: String? = nil
+        contentSnippet: String? = nil,
+        relevantQuote: String? = nil,
+        deepLinkURL: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -111,12 +122,15 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
         self.accessDate = accessDate
         self.reliabilityScore = min(1.0, max(0.0, reliabilityScore))
         self.contentSnippet = contentSnippet
+        self.relevantQuote = relevantQuote
+        self.deepLinkURL = deepLinkURL
     }
     
     // MARK: - Custom Decoder (handles legacy data without all fields)
     
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         
         // Required fields with defaults
         self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -132,6 +146,10 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
         let rawScore = try container.decodeIfPresent(Double.self, forKey: .reliabilityScore) ?? 0.5
         self.reliabilityScore = min(1.0, max(0.0, rawScore))
         self.contentSnippet = try container.decodeIfPresent(String.self, forKey: .contentSnippet)
+        self.relevantQuote = try container.decodeIfPresent(String.self, forKey: .relevantQuote)
+            ?? legacyContainer.decodeIfPresent(String.self, forKey: .relevantQuote)
+        self.deepLinkURL = try container.decodeIfPresent(String.self, forKey: .deepLinkURL)
+            ?? legacyContainer.decodeIfPresent(String.self, forKey: .deepLinkURL)
     }
     
     /// Create a Source from a TavilySearchResult
@@ -141,7 +159,8 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
             url: result.url,
             sourceType: sourceType,
             reliabilityScore: reliabilityScore,
-            contentSnippet: result.content
+            contentSnippet: result.content,
+            relevantQuote: result.content
         )
     }
     

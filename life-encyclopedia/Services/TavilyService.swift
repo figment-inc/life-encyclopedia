@@ -318,6 +318,82 @@ final class TavilyService {
             isFictional: false
         )
     }
+
+    /// Search for people candidates from the web for the create flow.
+    /// - Parameters:
+    ///   - query: Partial query entered by the user.
+    ///   - limit: Maximum number of unique candidates to return.
+    /// - Returns: Relevance-ranked candidate list.
+    func searchPeopleCandidates(query: String, limit: Int = 20) async throws -> [PersonCandidate] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return [] }
+
+        let safeLimit = max(1, min(limit, 30))
+        let searchQuery = "\(trimmedQuery) person biography"
+        let wikipediaDomains = ["en.wikipedia.org", "wikipedia.org"]
+        let rawResults = try await performSearch(
+            query: searchQuery,
+            depth: "basic",
+            maxResults: safeLimit * 2,
+            includeDomains: wikipediaDomains
+        )
+
+        let filteredResults = rawResults.filter { result in
+            // Ensure the result is actually from Wikipedia
+            let isWikipedia = result.url.lowercased().contains("wikipedia.org")
+            guard isWikipedia else { return false }
+
+            let lowercasedQuery = trimmedQuery.lowercased()
+            return result.title.lowercased().contains(lowercasedQuery) ||
+                   result.content.lowercased().contains(lowercasedQuery)
+        }
+        if filteredResults.isEmpty { return [] }
+
+        var candidatesByID: [String: PersonCandidate] = [:]
+        for result in filteredResults {
+            guard let candidateName = candidateName(from: result),
+                  isLikelyPersonName(candidateName) else {
+                continue
+            }
+
+            let combinedText = (result.title + " " + result.content).lowercased()
+
+            // Filter out fictional characters at search time
+            let isFictional = strongFictionalIndicators.contains { combinedText.contains($0) }
+            if isFictional { continue }
+
+            // Require positive evidence this is about a real person
+            guard isLikelyPersonResult(combinedText) else { continue }
+
+            let candidate = PersonCandidate(
+                name: candidateName,
+                years: extractLifespan(from: result.content),
+                summary: extractPersonDescription(from: result.content, name: candidateName),
+                sourceTitle: result.title,
+                sourceURL: result.url,
+                relevanceScore: candidateRelevanceScore(
+                    name: candidateName,
+                    query: trimmedQuery,
+                    sourceScore: result.score
+                )
+            )
+
+            if let existing = candidatesByID[candidate.id], existing.relevanceScore >= candidate.relevanceScore {
+                continue
+            }
+            candidatesByID[candidate.id] = candidate
+        }
+
+        let uniqueCandidatesByName = deduplicateCandidatesByName(Array(candidatesByID.values))
+
+        return uniqueCandidatesByName
+            .sorted { left, right in
+                if left.relevanceScore != right.relevanceScore { return left.relevanceScore > right.relevanceScore }
+                return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+            }
+            .prefix(safeLimit)
+            .map { $0 }
+    }
     
     /// Batch verify multiple events for a person
     /// - Parameters:
@@ -325,7 +401,7 @@ final class TavilyService {
     ///   - events: Array of (event, date) tuples to verify
     /// - Returns: Array of EventVerification results
     func batchVerifyEvents(name: String, events: [(event: String, date: String)]) async throws -> [EventVerification] {
-        var verifications: [EventVerification] = []
+        var verifications = Array<EventVerification?>(repeating: nil, count: events.count)
         
         // Process in batches of 5 to avoid rate limiting
         let batchSize = 5
@@ -333,15 +409,21 @@ final class TavilyService {
             let endIndex = min(batch + batchSize, events.count)
             let currentBatch = events[batch..<endIndex]
             
-            try await withThrowingTaskGroup(of: EventVerification.self) { group in
-                for (event, date) in currentBatch {
+            try await withThrowingTaskGroup(of: (Int, EventVerification).self) { group in
+                for (offset, eventTuple) in currentBatch.enumerated() {
+                    let absoluteIndex = batch + offset
                     group.addTask {
-                        try await self.verifyEvent(name: name, event: event, date: date)
+                        let verification = try await self.verifyEvent(
+                            name: name,
+                            event: eventTuple.event,
+                            date: eventTuple.date
+                        )
+                        return (absoluteIndex, verification)
                     }
                 }
                 
-                for try await verification in group {
-                    verifications.append(verification)
+                for try await (index, verification) in group {
+                    verifications[index] = verification
                 }
             }
             
@@ -351,13 +433,351 @@ final class TavilyService {
             }
         }
         
-        return verifications
+        // Preserve input order and gracefully skip missing results if any task failed silently.
+        return verifications.compactMap { $0 }
     }
     
     // MARK: - Private Helpers
+
+    private func candidateName(from result: TavilySearchResult) -> String? {
+        let separators = [" - ", " | ", " — ", " – ", ":"]
+        let trimmedTitle = result.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return nil }
+
+        var candidate = trimmedTitle
+        for separator in separators {
+            if let range = candidate.range(of: separator) {
+                candidate = String(candidate[..<range.lowerBound])
+                break
+            }
+        }
+
+        candidate = candidate
+            .replacingOccurrences(of: "\"", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if candidate.count >= 3 { return candidate }
+        return nil
+    }
+
+    private func isLikelyPersonName(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 3 { return false }
+
+        let disallowedKeywords = [
+            "wikipedia",
+            "list of",
+            "history of",
+            "dynasty",
+            "timeline",
+            "category:",
+            "portal:"
+        ]
+        let lowercased = trimmed.lowercased()
+        if disallowedKeywords.contains(where: { lowercased.contains($0) }) {
+            return false
+        }
+
+        // Reject names with parenthetical qualifiers that indicate fictional/non-person entries
+        let fictionalQualifiers = [
+            "(hero)", "(character)", "(comics)", "(fiction)", "(novel)",
+            "(film)", "(tv series)", "(anime)", "(manga)", "(video game)",
+            "(mythology)", "(folklore)", "(fairy tale)", "(legend)",
+            "(marvel)", "(dc comics)", "(disney)", "(star wars)"
+        ]
+        if fictionalQualifiers.contains(where: { lowercased.contains($0) }) {
+            return false
+        }
+
+        return true
+    }
+
+    /// Check whether a result's combined text (title + content, already lowercased) describes a real person.
+    /// Requires at least one positive person indicator AND no non-person blocklist matches.
+    private func isLikelyPersonResult(_ combinedText: String) -> Bool {
+        // Non-person Wikipedia article indicators (places, events, concepts, objects, etc.)
+        let nonPersonIndicators = [
+            "is a city",
+            "is a town",
+            "is a village",
+            "is a county",
+            "is a municipality",
+            "is a country",
+            "is a state",
+            "is a province",
+            "is a region",
+            "is a district",
+            "is a river",
+            "is a mountain",
+            "is a lake",
+            "is a building",
+            "is a company",
+            "is a brand",
+            "is a band",
+            "is a song",
+            "is a film",
+            "is a book",
+            "is a novel",
+            "is an album",
+            "is a television",
+            "is a tv",
+            "is a genus",
+            "is a species",
+            "is a type of",
+            "is a family of",
+            "is a term",
+            "is a concept",
+            "is an event",
+            "is a holiday",
+            "is a celebration",
+            "is an organization",
+            "is a school",
+            "is a university",
+            "is a college",
+            "is a hospital",
+            "census-designated place",
+            "unincorporated community",
+            "populated place",
+            "geographic",
+            "coordinates"
+        ]
+
+        // Reject if content matches non-person patterns
+        if nonPersonIndicators.contains(where: { combinedText.contains($0) }) {
+            return false
+        }
+
+        // Person indicators: biography patterns common in Wikipedia person articles
+        let personIndicators = [
+            // Life events
+            "was born", "born on", "born in", "(born ", "date of birth",
+            "died on", "died in", "date of death", "(died ",
+            // Biography structure
+            "biography", "early life", "personal life", "later life",
+            "career", "education",
+            // Descriptions of people
+            "was a ", "was an ", "is a ", "is an ",
+            // Life year patterns (e.g. "(1940–2020)")
+            "graduated from", "attended", "married", "children",
+            // Titles and roles
+            "politician", "scientist", "artist", "author", "writer",
+            "musician", "composer", "actor", "actress", "director",
+            "philosopher", "mathematician", "physicist", "chemist",
+            "engineer", "architect", "physician", "surgeon", "nurse",
+            "general", "admiral", "colonel", "soldier", "military",
+            "king", "queen", "emperor", "empress", "prince", "princess",
+            "president", "prime minister", "governor", "senator", "mayor",
+            "journalist", "explorer", "inventor", "entrepreneur",
+            "businessman", "businesswoman", "industrialist",
+            "athlete", "player", "coach", "boxer", "wrestler",
+            "painter", "sculptor", "photographer",
+            "theologian", "priest", "bishop", "pope", "rabbi", "imam",
+            "activist", "reformer", "revolutionary",
+            "professor", "researcher", "historian", "economist",
+            "lawyer", "judge", "chief justice",
+            "philanthropist", "humanitarian",
+            "singer", "rapper", "guitarist", "drummer",
+            "ceo of", "founder of", "co-founder",
+            // Awards/honors (strong person signal)
+            "nobel", "pulitzer", "grammy", "oscar", "emmy", "award"
+        ]
+
+        return personIndicators.contains { combinedText.contains($0) }
+    }
+
+    private func summarizeCandidateContent(_ content: String) -> String {
+        let cleaned = content
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if cleaned.count <= 220 { return cleaned }
+        let cutoff = cleaned.index(cleaned.startIndex, offsetBy: 220)
+        return String(cleaned[..<cutoff]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    /// Extract a lifespan string like "1452 – 1519" from content.
+    /// Returns a normalized, display-ready string with proper en-dashes.
+    private func extractLifespan(from content: String) -> String? {
+        // Ordered patterns: most specific first
+        let patterns: [(pattern: String, format: LifespanFormat)] = [
+            // (1452–1519) or (1452-1519)
+            ("\\(\\s*(\\d{3,4})\\s*[–\\-—]\\s*(\\d{3,4})\\s*\\)", .range),
+            // (1980–present)
+            ("\\(\\s*(\\d{3,4})\\s*[–\\-—]\\s*present\\s*\\)", .birthToPresent),
+            // born 1452 ... died 1519
+            ("born\\s+(\\d{3,4}).*?died\\s+(\\d{3,4})", .range),
+            // (born 1980)
+            ("\\(born\\s+(\\d{3,4})\\)", .birthOnly),
+            // 100 BCE–44 BCE
+            ("\\b(\\d{3,4})\\s*(BCE?|CE|BC|AD)\\s*[–\\-—]\\s*(\\d{3,4})\\s*(BCE?|CE|BC|AD)?\\b", .eraRange)
+        ]
+
+        for (pattern, format) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+            let range = NSRange(content.startIndex..., in: content)
+            guard let match = regex.firstMatch(in: content, range: range) else { continue }
+
+            switch format {
+            case .range:
+                if let r1 = Range(match.range(at: 1), in: content),
+                   let r2 = Range(match.range(at: 2), in: content) {
+                    return "\(content[r1]) \u{2013} \(content[r2])"
+                }
+            case .birthToPresent:
+                if let r1 = Range(match.range(at: 1), in: content) {
+                    return "\(content[r1]) \u{2013} present"
+                }
+            case .birthOnly:
+                if let r1 = Range(match.range(at: 1), in: content) {
+                    return "b. \(content[r1])"
+                }
+            case .eraRange:
+                if let r1 = Range(match.range(at: 1), in: content),
+                   let r2 = Range(match.range(at: 2), in: content),
+                   let r3 = Range(match.range(at: 3), in: content) {
+                    let era1 = String(content[r2]).uppercased()
+                    let era2Str: String
+                    if match.range(at: 4).location != NSNotFound,
+                       let r4 = Range(match.range(at: 4), in: content) {
+                        era2Str = " \(String(content[r4]).uppercased())"
+                    } else {
+                        era2Str = ""
+                    }
+                    return "\(content[r1]) \(era1) \u{2013} \(content[r3])\(era2Str)"
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private enum LifespanFormat {
+        case range
+        case birthToPresent
+        case birthOnly
+        case eraRange
+    }
+
+    /// Extract the first meaningful sentence that describes a person.
+    private func extractPersonDescription(from content: String, name: String) -> String {
+        let cleaned = content
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Split into sentences
+        let sentenceEnders = CharacterSet(charactersIn: ".!?")
+        var sentences: [String] = []
+        var current = ""
+        for char in cleaned {
+            current.append(char)
+            if sentenceEnders.contains(Unicode.Scalar(String(char))!) {
+                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    sentences.append(trimmed)
+                }
+                current = ""
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sentences.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let nameParts = name.lowercased().split(separator: " ")
+        let lastName = nameParts.last.map(String.init) ?? name.lowercased()
+
+        // Find the first sentence mentioning the person that reads like a description
+        // (contains a verb-like indicator: "was", "is", "served", etc.)
+        let descriptionIndicators = ["was ", "is ", "were ", "served ", "became ", "founded ", "known ", "regarded "]
+        for sentence in sentences {
+            let lower = sentence.lowercased()
+            let mentionsPerson = lower.contains(name.lowercased()) || lower.contains(lastName)
+            let hasDescriptor = descriptionIndicators.contains { lower.contains($0) }
+            if mentionsPerson && hasDescriptor && sentence.count >= 20 {
+                // Trim to one sentence, max ~200 chars
+                if sentence.count <= 200 {
+                    return sentence
+                }
+                let cutoff = sentence.index(sentence.startIndex, offsetBy: 200)
+                return String(sentence[..<cutoff]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+            }
+        }
+
+        // Fallback: first sentence that mentions the person
+        for sentence in sentences {
+            let lower = sentence.lowercased()
+            if (lower.contains(name.lowercased()) || lower.contains(lastName)) && sentence.count >= 15 {
+                if sentence.count <= 200 {
+                    return sentence
+                }
+                let cutoff = sentence.index(sentence.startIndex, offsetBy: 200)
+                return String(sentence[..<cutoff]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+            }
+        }
+
+        // Last resort: truncated content
+        return summarizeCandidateContent(content)
+    }
+
+    private func candidateRelevanceScore(name: String, query: String, sourceScore: Double) -> Double {
+        let normalizedName = name.lowercased()
+        let normalizedQuery = query.lowercased()
+        var score = sourceScore
+
+        if normalizedName == normalizedQuery { score += 2.0 }
+        if normalizedName.hasPrefix(normalizedQuery) { score += 1.2 }
+        if normalizedName.contains(normalizedQuery) { score += 0.7 }
+
+        return score
+    }
+
+    private func deduplicateCandidatesByName(_ candidates: [PersonCandidate]) -> [PersonCandidate] {
+        var candidatesByName: [String: PersonCandidate] = [:]
+
+        for candidate in candidates {
+            let normalizedName = normalizeCandidateName(candidate.name)
+            guard !normalizedName.isEmpty else { continue }
+
+            guard let existingCandidate = candidatesByName[normalizedName] else {
+                candidatesByName[normalizedName] = candidate
+                continue
+            }
+
+            if shouldPrefer(candidate, over: existingCandidate) {
+                candidatesByName[normalizedName] = candidate
+            }
+        }
+
+        return Array(candidatesByName.values)
+    }
+
+    private func shouldPrefer(_ candidate: PersonCandidate, over existingCandidate: PersonCandidate) -> Bool {
+        if candidate.relevanceScore != existingCandidate.relevanceScore {
+            return candidate.relevanceScore > existingCandidate.relevanceScore
+        }
+
+        let candidateHasYears = !(candidate.years?.isEmpty ?? true)
+        let existingHasYears = !(existingCandidate.years?.isEmpty ?? true)
+        if candidateHasYears != existingHasYears {
+            return candidateHasYears
+        }
+
+        if candidate.summary.count != existingCandidate.summary.count {
+            return candidate.summary.count > existingCandidate.summary.count
+        }
+
+        return candidate.name.localizedCaseInsensitiveCompare(existingCandidate.name) == .orderedAscending
+    }
+
+    private func normalizeCandidateName(_ name: String) -> String {
+        name
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
     
     /// Perform a Tavily search request
-    private func performSearch(query: String, depth: String, maxResults: Int) async throws -> [TavilySearchResult] {
+    private func performSearch(query: String, depth: String, maxResults: Int, includeDomains: [String]? = nil) async throws -> [TavilySearchResult] {
         guard let url = URL(string: "\(APIConfig.tavilyBaseURL)/search") else {
             throw TavilyError.invalidURL
         }
@@ -366,7 +786,7 @@ final class TavilyService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "api_key": APIConfig.tavilyAPIKey,
             "query": query,
             "search_depth": depth,
@@ -374,6 +794,10 @@ final class TavilyService {
             "include_raw_content": false,
             "max_results": maxResults
         ]
+
+        if let includeDomains, !includeDomains.isEmpty {
+            body["include_domains"] = includeDomains
+        }
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
@@ -438,7 +862,6 @@ final class TavilyService {
             
             var hasStrongFictional = false
             var hasModerateFictional = false
-            var hasRealIndicator = false
             
             // Check for strong fictional indicators (definitive statements)
             for indicator in strongFictionalIndicators {
@@ -464,7 +887,6 @@ final class TavilyService {
             for indicator in realPersonIndicators {
                 if combinedText.contains(indicator) {
                     realPersonMatches += 1
-                    hasRealIndicator = true
                     break
                 }
             }

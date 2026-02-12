@@ -8,36 +8,52 @@
 import SwiftUI
 
 struct HomeView: View {
-    @State private var allPeople: [Person] = []
-    @State private var isLoading = false
+    @State private var loadedPeople: [Person] = []
+    @State private var isInitialLoading = false
+    @State private var isLoadingMore = false
+    @State private var hasMorePages = false
+    @State private var currentPage = 1
+    @State private var totalCount: Int?
+    
+    @State private var deletingPersonID: UUID?
     @State private var errorMessage: String?
     @State private var showCreateSheet = false
+    @State private var personPendingDeletion: Person?
+    @State private var debouncedReloadTask: Task<Void, Never>?
     
-    // Filter state
     @State private var filterState = FilterState()
     
     private let supabaseService = SupabaseService()
+    private let pageSize = 30
     
-    /// Filtered and sorted people based on current filter state
-    private var filteredPeople: [Person] {
-        filterState.apply(to: allPeople)
+    private var visiblePeople: [Person] {
+        filterState.applyClientRefinements(to: loadedPeople)
+    }
+    
+    private var isLibraryEmpty: Bool {
+        (totalCount ?? 0) == 0 &&
+        filterState.normalizedSearchText.isEmpty &&
+        !filterState.hasActiveFilters
     }
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Unified filter bar (always visible when there are people)
-                if !allPeople.isEmpty {
-                    FilterBar(filterState: filterState)
+                if !isLibraryEmpty || !loadedPeople.isEmpty {
+                    FilterBar(
+                        filterState: filterState,
+                        resultCount: visiblePeople.count,
+                        totalCount: totalCount,
+                        isLoading: isInitialLoading || isLoadingMore
+                    )
                 }
                 
-                // Main content
                 Group {
-                    if isLoading && allPeople.isEmpty {
+                    if isInitialLoading && loadedPeople.isEmpty {
                         loadingView
-                    } else if allPeople.isEmpty {
+                    } else if isLibraryEmpty {
                         emptyStateView
-                    } else if filteredPeople.isEmpty {
+                    } else if visiblePeople.isEmpty {
                         noResultsView
                     } else {
                         peopleListView
@@ -55,9 +71,6 @@ struct HomeView: View {
                     .accessibilityLabel("Create new profile")
                 }
             }
-            .refreshable {
-                await loadPeople()
-            }
             .alert("Error", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -70,22 +83,53 @@ struct HomeView: View {
                     Text(errorMessage)
                 }
             }
+            .confirmationDialog(
+                personPendingDeletion.map { "Delete \($0.name)?" } ?? "Delete profile?",
+                isPresented: Binding(
+                    get: { personPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            personPendingDeletion = nil
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    guard let person = personPendingDeletion else { return }
+                    personPendingDeletion = nil
+                    Task {
+                        await deletePerson(person)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    personPendingDeletion = nil
+                }
+            } message: {
+                Text("This will permanently remove this profile from your library.")
+            }
             .sheet(isPresented: $showCreateSheet) {
                 CreateView()
+            }
+            .onChange(of: filterState.querySignature) { _, _ in
+                scheduleDebouncedReload()
             }
             .navigationDestination(for: Person.self) { person in
                 PersonDetailView(
                     person: person,
                     onViewTracked: {
                         Task {
-                            await loadPeople()
+                            await reloadFirstPage()
                         }
                     }
                 )
             }
         }
         .task {
-            await loadPeople()
+            await reloadFirstPage()
+        }
+        .onDisappear {
+            debouncedReloadTask?.cancel()
         }
     }
     
@@ -137,7 +181,7 @@ struct HomeView: View {
                     .font(.headlineSmall)
                     .foregroundStyle(.secondary)
                 
-                Text("Try adjusting your filters\nto see more results.")
+                Text("Try changing your search or filter choices\nto discover more people.")
                     .font(.bodyMedium)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -148,7 +192,7 @@ struct HomeView: View {
                     filterState.reset()
                 }
             } label: {
-                Text("Clear Filters")
+                Text("Clear Search & Filters")
                     .font(.labelLarge)
                     .padding(.horizontal, Spacing.lg)
                     .padding(.vertical, Spacing.sm)
@@ -167,55 +211,159 @@ struct HomeView: View {
     private var peopleListView: some View {
         ScrollView {
             LazyVStack(spacing: Spacing.md) {
-                // Results count header
-                if filterState.hasActiveFilters {
-                    HStack {
-                        Text("\(filteredPeople.count) of \(allPeople.count) people")
-                            .font(.caption)
-                            .foregroundStyle(.textTertiary)
-                        
-                        Spacer()
-                        
-                        if filterState.hasCustomSort {
-                            Text("Sorted by \(filterState.sortBy.displayName.lowercased())")
-                                .font(.caption)
-                                .foregroundStyle(.textTertiary)
-                        }
-                    }
-                    .padding(.horizontal, Spacing.screenHorizontal)
-                }
-                
-                ForEach(filteredPeople) { person in
+                ForEach(visiblePeople) { person in
                     NavigationLink(value: person) {
                         PersonCard(person: person)
                     }
                     .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            personPendingDeletion = person
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .disabled(deletingPersonID == person.id)
+                    }
+                    .onAppear {
+                        if person.id == visiblePeople.last?.id {
+                            Task {
+                                await loadNextPageIfNeeded()
+                            }
+                        }
+                    }
+                }
+                
+                if isLoadingMore {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.md)
+                } else if hasMorePages {
+                    Button("Load more") {
+                        Task {
+                            await loadNextPageIfNeeded()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.bodySmall)
+                    .foregroundStyle(.textTertiary)
+                    .padding(.vertical, Spacing.md)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .padding(.horizontal, Spacing.screenHorizontal)
             .padding(.top, Spacing.sm)
             .padding(.bottom, Spacing.xxl)
         }
+        .refreshable {
+            await reloadFirstPage()
+        }
         .background(Color.surfacePrimary)
     }
     
     // MARK: - Methods
     
-    private func loadPeople() async {
-        isLoading = true
+    private func scheduleDebouncedReload() {
+        debouncedReloadTask?.cancel()
+        debouncedReloadTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
+            await reloadFirstPage()
+        }
+    }
+    
+    @MainActor
+    private func reloadFirstPage() async {
+        isInitialLoading = true
         errorMessage = nil
+        defer { isInitialLoading = false }
+        
+        let requestSignature = filterState.querySignature
+        let query = filterState.makePeopleQuery(page: 1, pageSize: pageSize)
         
         do {
-            allPeople = try await supabaseService.fetchPeople()
+            let page = try await supabaseService.fetchPeople(query: query)
+            
+            if requestSignature != filterState.querySignature {
+                return
+            }
+            
+            loadedPeople = page.people
+            totalCount = page.totalCount ?? page.people.count
+            hasMorePages = page.hasMore
+            currentPage = page.page
+        } catch let supabaseError as SupabaseService.SupabaseError {
+            errorMessage = supabaseError.errorDescription
         } catch is CancellationError {
-            // Silently ignore - task was cancelled intentionally by SwiftUI
         } catch let urlError as URLError where urlError.code == .cancelled {
-            // Silently ignore URLSession cancellation
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Unable to load people right now. Please verify your Supabase URL and anon key."
+        }
+    }
+    
+    @MainActor
+    private func loadNextPageIfNeeded() async {
+        if isLoadingMore || isInitialLoading || !hasMorePages {
+            return
         }
         
-        isLoading = false
+        let requestSignature = filterState.querySignature
+        let nextPage = currentPage + 1
+        let query = filterState.makePeopleQuery(page: nextPage, pageSize: pageSize)
+        
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        
+        do {
+            let page = try await supabaseService.fetchPeople(query: query)
+            
+            if requestSignature != filterState.querySignature {
+                return
+            }
+            
+            let existingIDs = Set(loadedPeople.map(\.id))
+            let uniquePeople = page.people.filter { !existingIDs.contains($0.id) }
+            loadedPeople.append(contentsOf: uniquePeople)
+            totalCount = page.totalCount ?? totalCount
+            hasMorePages = page.hasMore
+            currentPage = page.page
+        } catch let supabaseError as SupabaseService.SupabaseError {
+            errorMessage = supabaseError.errorDescription
+        } catch is CancellationError {
+        } catch let urlError as URLError where urlError.code == .cancelled {
+        } catch {
+            errorMessage = "Unable to load more results right now. Please try again."
+        }
+    }
+    
+    @MainActor
+    private func removeDeletedPerson(_ person: Person) {
+        loadedPeople.removeAll { $0.id == person.id }
+        if let totalCount {
+            self.totalCount = max(0, totalCount - 1)
+        } else {
+            totalCount = loadedPeople.count
+        }
+    }
+    
+    @MainActor
+    private func deletePerson(_ person: Person) async {
+        guard deletingPersonID == nil else { return }
+        
+        deletingPersonID = person.id
+        defer { deletingPersonID = nil }
+        
+        do {
+            try await supabaseService.deletePerson(id: person.id)
+            withAnimation(.spring(duration: 0.22)) {
+                removeDeletedPerson(person)
+            }
+        } catch let supabaseError as SupabaseService.SupabaseError {
+            errorMessage = supabaseError.errorDescription
+        } catch is CancellationError {
+        } catch let urlError as URLError where urlError.code == .cancelled {
+        } catch {
+            errorMessage = "Unable to delete this profile right now. Please try again."
+        }
     }
 }
 
@@ -224,70 +372,76 @@ struct HomeView: View {
 struct PersonCard: View {
     let person: Person
     
+    private var activeYearsText: String {
+        let eventYears = person.events.compactMap(\.year)
+        if let firstActiveYear = eventYears.min(), let lastActiveYear = eventYears.max() {
+            if firstActiveYear == lastActiveYear {
+                return "\(firstActiveYear)"
+            }
+            return "\(firstActiveYear) - \(lastActiveYear)"
+        }
+        
+        let birthYear = person.filterMetadata.birthYear ?? extractYear(from: person.birthDate)
+        let deathYear = person.filterMetadata.deathYear ?? extractYear(from: person.deathDate)
+        
+        if let birthYear, let deathYear {
+            return "\(birthYear) - \(deathYear)"
+        }
+        
+        if let birthYear {
+            return "\(birthYear) - Present"
+        }
+        
+        if let deathYear {
+            return deathYear.description
+        }
+        
+        return "Active years unknown"
+    }
+    
+    private func extractYear(from value: String?) -> Int? {
+        guard let value else { return nil }
+        
+        let numericSegments = value.split { !$0.isNumber }
+        for segment in numericSegments {
+            guard segment.count == 4, let year = Int(segment), (1000...2999).contains(year) else {
+                continue
+            }
+            return year
+        }
+        
+        return nil
+    }
+    
+    private var oneSentenceSummary: String {
+        let trimmed = person.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Preset" }
+        
+        let sentenceBreaks = CharacterSet(charactersIn: ".!?")
+        if let punctuationIndex = trimmed.rangeOfCharacter(from: sentenceBreaks)?.upperBound {
+            return String(trimmed[..<punctuationIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        return trimmed
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            // Header with name and domain badge
-            HStack(alignment: .top) {
-                Text(person.name)
-                    .font(.system(size: 22, weight: .regular, design: .serif))
-                    .foregroundStyle(.textPrimary)
-                
-                Spacer()
-                
-                // Domain badge if available
-                if let domain = person.filterMetadata.primaryDomain {
-                    Image(systemName: domain.iconName)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.textTertiary)
-                        .padding(6)
-                        .background(Color.surfaceSecondary)
-                        .clipShape(Circle())
-                }
-            }
+            Text(person.name)
+                .font(.system(size: 22, weight: .regular, design: .serif))
+                .foregroundStyle(.textPrimary)
             
-            // Lifespan and region
-            HStack(spacing: Spacing.sm) {
-                if let lifeSpan = person.lifeSpan {
-                    Text(lifeSpan)
-                        .font(.caption)
-                        .foregroundStyle(.textTertiary)
-                        .tracking(0.5)
-                }
-                
-                if let region = person.filterMetadata.culturalRegion {
-                    Text("•")
-                        .font(.caption)
-                        .foregroundStyle(.textTertiary)
-                    
-                    Text(region.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.textTertiary)
-                }
-            }
+            Text(activeYearsText)
+                .font(.caption)
+                .foregroundStyle(.textTertiary)
+                .tracking(0.5)
             
-            // Summary as body text
-            Text(person.summary)
+            Text(oneSentenceSummary)
                 .font(.bodyMediumSerif)
                 .foregroundStyle(.textSecondary)
-                .lineLimit(3)
+                .lineLimit(2)
                 .lineSpacing(4)
                 .padding(.top, Spacing.xxs)
-            
-            // Tags row if metadata exists
-            if person.filterMetadata.primaryDomain != nil || person.filterMetadata.archetype != nil {
-                HStack(spacing: Spacing.xs) {
-                    if let domain = person.filterMetadata.primaryDomain {
-                        PersonTagView(text: domain.displayName, icon: domain.iconName)
-                    }
-                    
-                    if let archetype = person.filterMetadata.archetype {
-                        PersonTagView(text: archetype.displayName, icon: archetype.iconName)
-                    }
-                    
-                    Spacer()
-                }
-                .padding(.top, Spacing.xs)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Spacing.cardPadding)

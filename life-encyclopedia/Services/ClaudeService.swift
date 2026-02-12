@@ -73,6 +73,8 @@ final class ClaudeService {
             let title: String
             let url: String
             let type: String?
+            let relevantQuote: String?
+            let deepLinkHint: String?
         }
     }
     
@@ -126,7 +128,9 @@ final class ClaudeService {
                         {
                             "title": "Source title",
                             "url": "URL from provided sources",
-                            "type": "wikipedia|news|academic|biography|official|archive|encyclopedia"
+                            "type": "wikipedia|news|academic|biography|official|archive|encyclopedia",
+                            "relevantQuote": "Short 1-sentence evidence quote (max ~180 chars) or null",
+                            "deepLinkHint": "Optional direct URL or fragment (example: #Early_life) or null"
                         }
                     ]
                 }
@@ -158,6 +162,8 @@ final class ClaudeService {
         - Death (if applicable)
         
         CRITICAL: Only cite sources from the AVAILABLE AUTHORITATIVE SOURCES list provided in the context. Do not invent URLs.
+        Include a short relevantQuote for each source when possible so users can quickly fact-check.
+        deepLinkHint is optional. Only include it when you are confident (absolute URL or valid fragment).
         """
         
         let userMessage = """
@@ -285,7 +291,9 @@ final class ClaudeService {
                         title: generatedSource.title,
                         url: generatedSource.url,
                         sourceType: sourceType,
-                        reliabilityScore: sourceType.baseReliabilityScore
+                        reliabilityScore: sourceType.baseReliabilityScore,
+                        relevantQuote: generatedSource.relevantQuote,
+                        deepLinkURL: generatedSource.deepLinkHint
                     )
                 } ?? []
                 
@@ -318,6 +326,90 @@ final class ClaudeService {
         }
     }
     
+    // MARK: - Candidate Descriptions
+
+    /// Response model for batch candidate descriptions
+    private struct CandidateDescriptionsResponse: Codable {
+        let descriptions: [CandidateDescription]
+
+        struct CandidateDescription: Codable {
+            let name: String
+            let description: String
+        }
+    }
+
+    /// Generate clean one-sentence descriptions for a batch of person candidates.
+    /// Uses a lightweight model for cost efficiency. Returns a dictionary mapping name -> description.
+    /// Fails gracefully: returns an empty dictionary on any error so callers can fall back.
+    func generateCandidateDescriptions(
+        candidates: [(name: String, rawSummary: String)]
+    ) async -> [String: String] {
+        guard !candidates.isEmpty else { return [:] }
+        guard let url = URL(string: "\(APIConfig.anthropicBaseURL)/messages") else { return [:] }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(APIConfig.anthropicAPIKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        let candidateList = candidates
+            .enumerated()
+            .map { index, c in "\(index + 1). \(c.name): \(c.rawSummary)" }
+            .joined(separator: "\n")
+
+        let systemPrompt = """
+        You are an encyclopedic editor. For each person listed, write ONE clean, elegant sentence describing who they are. \
+        The sentence should read like a dictionary biography entry — factual, concise, and authoritative. \
+        Do NOT include birth/death years in the sentence (those are shown separately). \
+        Strip any markdown formatting. If a person is fictional or you cannot identify them, write "Unknown person."
+
+        Respond with ONLY valid JSON in this exact format:
+        {"descriptions": [{"name": "Full Name", "description": "One sentence."}]}
+        """
+
+        let userMessage = "Write one-sentence descriptions for these people:\n\n\(candidateList)"
+
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-20250514",
+            "max_tokens": 2048,
+            "system": systemPrompt,
+            "messages": [
+                ["role": "user", "content": userMessage]
+            ]
+        ]
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return [:] }
+
+            let claudeResponse = try JSONDecoder().decode(ClaudeResponse.self, from: data)
+
+            guard let textContent = claudeResponse.content.first(where: { $0.type == "text" }),
+                  let jsonText = textContent.text else { return [:] }
+
+            let cleanedJSON = extractJSON(from: jsonText)
+            guard let jsonData = cleanedJSON.data(using: .utf8) else { return [:] }
+
+            let parsed = try JSONDecoder().decode(CandidateDescriptionsResponse.self, from: jsonData)
+
+            var result: [String: String] = [:]
+            for item in parsed.descriptions {
+                let normalizedName = item.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                result[normalizedName] = item.description
+            }
+            return result
+        } catch {
+            #if DEBUG
+            print("generateCandidateDescriptions failed: \(error.localizedDescription)")
+            #endif
+            return [:]
+        }
+    }
+
     // MARK: - Private Helpers
     
     /// Extract JSON from text that may contain markdown code fences or be truncated

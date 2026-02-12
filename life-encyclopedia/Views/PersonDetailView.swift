@@ -300,9 +300,20 @@ struct SourceFootnote: View {
     let number: Int
     @Environment(\.openURL) private var openURL
     
+    private var openableURLString: String {
+        source.deepLinkURL ?? source.url
+    }
+    
+    private var factCheckQuote: String? {
+        CitationDeepLinkBuilder.bestQuote(
+            relevantQuote: source.relevantQuote,
+            contentSnippet: source.contentSnippet
+        )
+    }
+    
     var body: some View {
         Button {
-            if let url = URL(string: source.url) {
+            if let url = URL(string: openableURLString) {
                 openURL(url)
             }
         } label: {
@@ -324,6 +335,14 @@ struct SourceFootnote: View {
                         Text(domain)
                             .font(.system(size: 12, weight: .regular))
                             .foregroundStyle(.textTertiary)
+                    }
+                    
+                    if let factCheckQuote {
+                        Text("\"\(factCheckQuote)\"")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(.textSecondary)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
                     }
                 }
                 

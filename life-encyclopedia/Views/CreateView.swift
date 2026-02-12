@@ -22,11 +22,13 @@ struct CreateView: View {
     @State private var showingOptions = false
     
     // MARK: - Existing Entry State
-    
-    @State private var existingMatches: [Person] = []
-    @State private var showExistingMatchesSheet = false
+
     @State private var selectedExistingPerson: Person?
-    @State private var pendingVerification: PersonVerification?
+    @State private var discoveryCandidates: [PersonCandidate] = []
+    @State private var existingMatches: [Person] = []
+    @State private var isLoadingCandidateLists = false
+    @State private var candidateSearchTask: Task<Void, Never>?
+    @State private var visibleDiscoveryCount = 5
     
     // MARK: - Services
     
@@ -39,6 +41,20 @@ struct CreateView: View {
     
     private var isLoading: Bool {
         isSearching || isGenerating
+    }
+
+    private let discoveryPageSize = 5
+
+    private var visibleDiscoveryCandidates: [PersonCandidate] {
+        Array(discoveryCandidates.prefix(visibleDiscoveryCount))
+    }
+
+    private var hasMoreDiscoveryResults: Bool {
+        visibleDiscoveryCount < discoveryCandidates.count
+    }
+
+    private var shouldHideSearchHeader: Bool {
+        !isSearching && (!discoveryCandidates.isEmpty || !existingMatches.isEmpty)
     }
     
     private var currentStep: CreateStep {
@@ -74,9 +90,6 @@ struct CreateView: View {
                     Text(errorMessage)
                 }
             }
-            .sheet(isPresented: $showExistingMatchesSheet) {
-                existingMatchesSheet
-            }
             .sheet(item: $selectedExistingPerson) { person in
                 NavigationStack {
                     PersonDetailView(
@@ -101,21 +114,13 @@ struct CreateView: View {
     // MARK: - Search View
     
     private var searchView: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            
+        ScrollView {
             VStack(spacing: Spacing.xl) {
-                // Icon and title
-                VStack(spacing: Spacing.md) {
-                    Image(systemName: "person.text.rectangle")
-                        .font(.system(size: 44, weight: .light))
-                        .foregroundStyle(.quaternary)
-                    
-                    Text("Research a historical figure")
-                        .font(.bodyMedium)
-                        .foregroundStyle(.secondary)
+                if !shouldHideSearchHeader {
+                    searchHeaderView
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                
+
                 // Search input
                 VStack(spacing: Spacing.md) {
                     TextField("Enter name", text: $searchText)
@@ -130,7 +135,25 @@ struct CreateView: View {
                         .padding(.horizontal, Spacing.lg)
                         .background(Color.surfaceSecondary)
                         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
-                    
+
+                    if isLoadingCandidateLists && !isSearching && currentStep == .search {
+                        HStack(spacing: Spacing.xs) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Searching discovery and existing entries...")
+                                .font(.caption)
+                                .foregroundStyle(.textSecondary)
+                        }
+                    }
+
+                    if !discoveryCandidates.isEmpty && !isSearching && currentStep == .search {
+                        discoveryCandidatesList
+                    }
+
+                    if !existingMatches.isEmpty && !isSearching && currentStep == .search {
+                        existingMatchesList
+                    }
+
                     Button(action: {
                         Task { await handleSearch() }
                     }) {
@@ -147,14 +170,26 @@ struct CreateView: View {
                         .frame(height: 50)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(searchText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
+                    .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                 }
-                .padding(.horizontal, Spacing.xl)
             }
-            
-            Spacer()
-            Spacer()
+            .padding(.horizontal, Spacing.xl)
+            .padding(.bottom, Spacing.xxl)
+            .animation(.easeInOut(duration: 0.28), value: shouldHideSearchHeader)
         }
+    }
+
+    private var searchHeaderView: some View {
+        VStack(spacing: Spacing.md) {
+            Image(systemName: "person.text.rectangle")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.quaternary)
+
+            Text("Research a historical figure")
+                .font(.bodyMedium)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, Spacing.xxl)
     }
     
     // MARK: - Verified View
@@ -295,111 +330,183 @@ struct CreateView: View {
         }
     }
     
-    // MARK: - Existing Matches Sheet
-    
-    private var existingMatchesSheet: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Header explanation
-                VStack(spacing: Spacing.sm) {
-                    Image(systemName: "person.fill.checkmark")
-                        .font(.system(size: 40, weight: .light))
-                        .foregroundStyle(.brandPrimary)
-                    
-                    Text("Entry Already Exists")
-                        .font(.system(size: 20, weight: .semibold, design: .serif))
-                    
-                    Text("We found an existing entry that matches your search. Would you like to view it?")
-                        .font(.bodySmall)
-                        .foregroundStyle(.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.horizontal, Spacing.xl)
-                .padding(.top, Spacing.lg)
-                .padding(.bottom, Spacing.md)
-                
-                // List of existing matches
-                List {
-                    ForEach(existingMatches) { person in
-                        Button(action: {
-                            showExistingMatchesSheet = false
-                            selectedExistingPerson = person
-                        }) {
-                            HStack(spacing: Spacing.md) {
-                                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                                    Text(person.name)
-                                        .font(.bodyMedium)
-                                        .foregroundStyle(.textPrimary)
-                                    
-                                    if let birthYear = person.filterMetadata.birthYear, let deathYear = person.filterMetadata.deathYear {
-                                        Text("\(birthYear) – \(deathYear)")
-                                            .font(.caption)
-                                            .foregroundStyle(.textTertiary)
-                                    } else if let birthYear = person.filterMetadata.birthYear {
-                                        Text("Born \(birthYear)")
-                                            .font(.caption)
-                                            .foregroundStyle(.textTertiary)
-                                    }
-                                    
-                                    Text("\(person.events.count) events")
-                                        .font(.caption)
-                                        .foregroundStyle(.textTertiary)
+    // MARK: - Discovery Candidates
+
+    private var discoveryCandidatesList: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            Text("DISCOVER PEOPLE")
+                .font(.labelMedium)
+                .foregroundStyle(.textTertiary)
+                .kerning(1.2)
+                .padding(.horizontal, Spacing.xxs)
+
+            VStack(spacing: Spacing.xs) {
+                ForEach(visibleDiscoveryCandidates) { candidate in
+                    Button {
+                        Task { await handleDiscoveryCandidateSelection(candidate) }
+                    } label: {
+                        HStack(alignment: .top, spacing: Spacing.sm) {
+                            VStack(alignment: .leading, spacing: Spacing.xs) {
+                                // Name
+                                Text(candidate.name)
+                                    .font(.system(size: 17, weight: .semibold, design: .serif))
+                                    .foregroundStyle(.textPrimary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                // Years
+                                if let years = candidate.years, !years.isEmpty {
+                                    Text(years)
+                                        .font(.system(size: 13, weight: .regular, design: .serif))
+                                        .foregroundStyle(.textSecondary)
                                 }
-                                
-                                Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
+
+                                // Description
+                                Text(candidateBodyText(for: candidate))
+                                    .font(.bodyMediumSerif)
                                     .foregroundStyle(.textTertiary)
+                                    .lineLimit(2)
+                                    .lineSpacing(3)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .padding(.vertical, Spacing.xs)
+
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 16, weight: .light))
+                                .foregroundStyle(.textTertiary)
+                                .padding(.top, 2)
                         }
-                        .listRowBackground(Color.surfaceCard)
+                        .padding(.horizontal, Spacing.cardPadding)
+                        .padding(.vertical, Spacing.md)
                     }
-                }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
-                
-                // Create new anyway button
-                VStack(spacing: Spacing.sm) {
-                    Divider()
-                    
-                    Button(action: handleContinueWithCreation) {
-                        Text("Create New Entry Anyway")
-                            .font(.bodySmall)
-                            .foregroundStyle(.textTertiary)
-                    }
-                    .padding(.vertical, Spacing.md)
+                    .buttonStyle(.plain)
+                    .background(Color.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
                 }
             }
-            .background(Color.surfacePrimary)
-            .navigationTitle("Existing Entry")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        showExistingMatchesSheet = false
-                        pendingVerification = nil
-                        handleReset()
-                    }
+
+            if hasMoreDiscoveryResults {
+                Button("Show more") {
+                    visibleDiscoveryCount = min(
+                        visibleDiscoveryCount + discoveryPageSize,
+                        discoveryCandidates.count
+                    )
                 }
+                .buttonStyle(.plain)
+                .font(.system(size: 13, weight: .regular, design: .serif))
+                .foregroundStyle(.textTertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, Spacing.xxs)
             }
         }
     }
-    
+
+    // MARK: - Existing Matches
+
+    private var existingMatchesList: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text("Already in Library")
+                .font(.caption)
+                .foregroundStyle(.textTertiary)
+                .padding(.horizontal, Spacing.xs)
+
+            VStack(spacing: 0) {
+                ForEach(existingMatches) { person in
+                    Button(action: {
+                        handleExistingMatchSelection(person)
+                    }) {
+                        HStack(spacing: Spacing.sm) {
+                            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                                Text(person.name)
+                                    .font(.bodyMedium)
+                                    .foregroundStyle(.textPrimary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                if let birthYear = person.filterMetadata.birthYear, let deathYear = person.filterMetadata.deathYear {
+                                    Text("\(birthYear) – \(deathYear)")
+                                        .font(.caption)
+                                        .foregroundStyle(.textTertiary)
+                                } else if let birthYear = person.filterMetadata.birthYear {
+                                    Text("Born \(birthYear)")
+                                        .font(.caption)
+                                        .foregroundStyle(.textTertiary)
+                                }
+                            }
+
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
+                    }
+                    .buttonStyle(.plain)
+
+                    if person.id != existingMatches.last?.id {
+                        Divider()
+                            .padding(.leading, Spacing.md)
+                    }
+                }
+            }
+            .background(Color.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
+        }
+    }
+
     // MARK: - Methods
-    
+
+    private func showExistingPerson(_ person: Person) {
+        candidateSearchTask?.cancel()
+        isLoadingCandidateLists = false
+        withAnimation(.easeInOut(duration: 0.28)) {
+            discoveryCandidates = []
+            existingMatches = []
+        }
+        verification = nil
+        generatedPerson = nil
+        verifiedResult = nil
+        pipelineProgress = nil
+        errorMessage = nil
+        selectedExistingPerson = person
+    }
+
     private func handleSearch() async {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSearch.isEmpty else { return }
-        
+
+        candidateSearchTask?.cancel()
+        isLoadingCandidateLists = false
         isSearching = true
         errorMessage = nil
-        
+
         do {
+            async let discovered = tavilyService.searchPeopleCandidates(query: trimmedSearch, limit: 20)
+            async let existing = supabaseService.searchPeopleForNameSuggestions(query: trimmedSearch, limit: 20)
+            let (fetchedDiscovered, fetchedExisting) = try await (discovered, existing)
+            let filteredDiscovered = removeExistingNames(from: fetchedDiscovered, existing: fetchedExisting)
+            let hasSuggestions = !filteredDiscovered.isEmpty || !fetchedExisting.isEmpty
+
+            withAnimation(.easeInOut(duration: 0.28)) {
+                discoveryCandidates = filteredDiscovered
+                existingMatches = fetchedExisting
+                visibleDiscoveryCount = min(discoveryPageSize, filteredDiscovered.count)
+            }
+
+            if hasSuggestions {
+                verification = nil
+                generatedPerson = nil
+                verifiedResult = nil
+                pipelineProgress = nil
+                isSearching = false
+
+                // Enrich descriptions in background (non-blocking)
+                if !filteredDiscovered.isEmpty {
+                    Task { await enrichCandidateDescriptions(for: filteredDiscovered) }
+                }
+                return
+            }
+
             // First verify the person exists externally
             let result = try await tavilyService.verifyPerson(name: trimmedSearch)
-            
+
             if result.isFictional {
                 errorMessage = "'\(trimmedSearch)' appears to be a fictional character. Please search for a real historical person."
                 isSearching = false
@@ -412,35 +519,56 @@ struct CreateView: View {
                 return
             }
             
-            // Person is verified - now check if they already exist in our database
-            let existingPeople = try await supabaseService.searchPeople(byName: trimmedSearch)
-            
-            if !existingPeople.isEmpty {
-                // Found existing entries - show the sheet to let user decide
-                existingMatches = existingPeople
-                pendingVerification = result
-                showExistingMatchesSheet = true
-            } else {
-                // No existing entries - proceed with normal flow
-                verification = result
-            }
+            verification = result
         } catch {
             errorMessage = error.localizedDescription
         }
         
         isSearching = false
     }
-    
-    private func handleContinueWithCreation() {
-        // User chose to create a new entry despite existing matches
-        showExistingMatchesSheet = false
-        if let pending = pendingVerification {
-            verification = pending
-            pendingVerification = nil
-        }
-        existingMatches = []
+
+    private func handleExistingMatchSelection(_ person: Person) {
+        showExistingPerson(person)
     }
-    
+
+    private func handleDiscoveryCandidateSelection(_ candidate: PersonCandidate) async {
+        candidateSearchTask?.cancel()
+        isLoadingCandidateLists = false
+        isSearching = true
+        errorMessage = nil
+        searchText = candidate.name
+
+        do {
+            let verificationResult = try await tavilyService.verifyPerson(name: candidate.name)
+
+            if verificationResult.isFictional {
+                errorMessage = "'\(candidate.name)' appears to be a fictional character. Please choose a real historical person."
+                isSearching = false
+                return
+            }
+
+            if verificationResult.isVerified {
+                verification = verificationResult
+            } else {
+                verification = PersonVerification(
+                    isVerified: true,
+                    name: candidate.name,
+                    summary: candidate.summary,
+                    sources: []
+                )
+            }
+
+            withAnimation(.easeInOut(duration: 0.28)) {
+                discoveryCandidates = []
+                existingMatches = []
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isSearching = false
+    }
+
     private func handleGenerate() async {
         guard let verification, verification.isVerified else { return }
         
@@ -494,6 +622,11 @@ struct CreateView: View {
         guard let person = generatedPerson else { return }
         
         do {
+            if let existingPerson = try await supabaseService.findExistingPerson(matchingName: person.name) {
+                showExistingPerson(existingPerson)
+                return
+            }
+
             _ = try await supabaseService.savePerson(person)
             handleReset()
         } catch {
@@ -502,14 +635,87 @@ struct CreateView: View {
     }
     
     private func handleReset() {
+        candidateSearchTask?.cancel()
         searchText = ""
         verification = nil
         generatedPerson = nil
         verifiedResult = nil
         errorMessage = nil
-        existingMatches = []
-        pendingVerification = nil
         selectedExistingPerson = nil
+        withAnimation(.easeInOut(duration: 0.28)) {
+            discoveryCandidates = []
+            existingMatches = []
+        }
+        isLoadingCandidateLists = false
+        visibleDiscoveryCount = discoveryPageSize
+    }
+
+    private func removeExistingNames(from candidates: [PersonCandidate], existing: [Person]) -> [PersonCandidate] {
+        let existingNames = Set(existing.map { normalizeNameForComparison($0.name) })
+        guard !existingNames.isEmpty else { return candidates }
+
+        return candidates.filter { candidate in
+            !existingNames.contains(normalizeNameForComparison(candidate.name))
+        }
+    }
+
+    /// Enriches discovery candidates with LLM-generated one-sentence descriptions.
+    /// Updates the candidates list in-place as descriptions arrive. Non-blocking; falls back gracefully.
+    private func enrichCandidateDescriptions(for candidates: [PersonCandidate]) async {
+        let input = candidates.map { (name: $0.name, rawSummary: $0.summary) }
+        let descriptions = await claudeService.generateCandidateDescriptions(candidates: input)
+        guard !descriptions.isEmpty else { return }
+
+        // Update candidates in-place with enriched descriptions
+        withAnimation(.easeInOut(duration: 0.2)) {
+            for index in discoveryCandidates.indices {
+                let normalizedName = discoveryCandidates[index].name
+                    .lowercased()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let enrichedDescription = descriptions[normalizedName] {
+                    discoveryCandidates[index].description = enrichedDescription
+                }
+            }
+        }
+    }
+
+    private func normalizeNameForComparison(_ value: String) -> String {
+        value
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    private func candidateBodyText(for candidate: PersonCandidate) -> String {
+        // Prefer LLM-generated description when available
+        if let description = candidate.description, !description.isEmpty {
+            return description
+        }
+        let summarySentence = normalizedCandidateSummarySentence(candidate.summary)
+        if !summarySentence.isEmpty { return summarySentence }
+        return "No description available."
+    }
+
+    private func normalizedCandidateSummarySentence(_ summary: String) -> String {
+        let cleanedSummary = summary
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedSummary.isEmpty else { return "" }
+
+        let endPunctuation = CharacterSet(charactersIn: ".!?")
+        var sentence = ""
+        for scalar in cleanedSummary.unicodeScalars {
+            sentence.unicodeScalars.append(scalar)
+            if endPunctuation.contains(scalar) { break }
+        }
+
+        let trimmedSentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferredSentence = trimmedSentence.isEmpty ? cleanedSummary : trimmedSentence
+        if preferredSentence.count <= 160 { return preferredSentence }
+
+        let cutoff = preferredSentence.index(preferredSentence.startIndex, offsetBy: 160)
+        return String(preferredSentence[..<cutoff]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 }
 

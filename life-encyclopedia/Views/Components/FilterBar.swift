@@ -10,19 +10,21 @@ import SwiftUI
 
 struct FilterBar: View {
     @Bindable var filterState: FilterState
+    let resultCount: Int
+    let totalCount: Int?
+    let isLoading: Bool
     
     @State private var showEraMenu = false
     @State private var showDomainMenu = false
     @State private var showRegionMenu = false
-    @State private var showMoreMenu = false
-    @State private var showAdvancedSheet = false
+    @State private var showRefineSheet = false
     
     var body: some View {
         VStack(spacing: 0) {
-            // Primary filter row
+            searchBarRow
+            
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Spacing.xs) {
-                    // Era picker
                     FilterDropdown(
                         label: eraLabel,
                         icon: "calendar",
@@ -35,7 +37,6 @@ struct FilterBar: View {
                             .presentationCompactAdaptation(.popover)
                     }
                     
-                    // Domain picker
                     FilterDropdown(
                         label: domainLabel,
                         icon: "square.grid.2x2",
@@ -48,7 +49,6 @@ struct FilterBar: View {
                             .presentationCompactAdaptation(.popover)
                     }
                     
-                    // Region picker
                     FilterDropdown(
                         label: regionLabel,
                         icon: "globe",
@@ -61,37 +61,47 @@ struct FilterBar: View {
                             .presentationCompactAdaptation(.popover)
                     }
                     
-                    // More options (overflow)
-                    MoreOptionsButton(
-                        hasActiveFilters: filterState.selectedImpactLevel != nil || filterState.hasAdvancedFilters,
-                        sortBy: filterState.sortBy
-                    ) {
-                        showMoreMenu = true
+                    Button {
+                        showRefineSheet = true
+                    } label: {
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 14, weight: .medium))
+                            
+                            Text(refineLabel)
+                                .font(.labelMedium)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.xs)
+                        .background(refineIsActive ? Color.accentColor.opacity(0.12) : Color.surfaceSecondary)
+                        .foregroundStyle(refineIsActive ? Color.accentColor : Color.textPrimary)
+                        .clipShape(Capsule())
                     }
-                    .popover(isPresented: $showMoreMenu) {
-                        MoreOptionsMenu(
-                            filterState: filterState,
-                            onAdvancedTap: {
-                                showMoreMenu = false
-                                showAdvancedSheet = true
-                            }
-                        )
-                        .presentationCompactAdaptation(.popover)
-                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, Spacing.screenHorizontal)
                 .padding(.vertical, Spacing.xs)
             }
             
-            // Active filter pills (if any)
             if filterState.hasActiveFilters {
                 activeFilterPills
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
+            
+            resultsRow
+                .padding(.horizontal, Spacing.screenHorizontal)
+                .padding(.bottom, Spacing.xs)
         }
         .background(Color.surfacePrimary)
-        .sheet(isPresented: $showAdvancedSheet) {
-            AdvancedFiltersSheet(filterState: filterState)
-                .presentationDetents([.medium])
+        .overlay(alignment: .bottom) {
+            Divider()
+                .opacity(0.45)
+        }
+        .animation(.spring(response: 0.25, dampingFraction: 0.9), value: filterState.hasActiveFilters)
+        .sheet(isPresented: $showRefineSheet) {
+            RefineFiltersSheet(filterState: filterState)
+                .presentationDetents([.medium, .large])
         }
     }
     
@@ -127,6 +137,72 @@ struct FilterBar: View {
         return "Region (\(filterState.selectedRegions.count))"
     }
     
+    private var refineIsActive: Bool {
+        filterState.selectedImpactLevel != nil || filterState.hasAdvancedFilters || filterState.hasCustomSort
+    }
+    
+    private var refineLabel: String {
+        if !refineIsActive {
+            return "Refine"
+        }
+        
+        let secondaryCount = (filterState.selectedImpactLevel != nil ? 1 : 0) +
+            filterState.advancedFilters.activeCount +
+            (filterState.hasCustomSort ? 1 : 0)
+        return "Refine (\(secondaryCount))"
+    }
+    
+    private var searchBarRow: some View {
+        HStack(spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.textTertiary)
+                
+                TextField("Search by name", text: $filterState.searchText)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .font(.bodyMedium)
+                    .onSubmit {
+                        filterState.commitSearch()
+                    }
+                
+                if !filterState.normalizedDraftSearchText.isEmpty {
+                    Button {
+                        filterState.clearSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .background(Color.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
+            
+            Button {
+                filterState.commitSearch()
+            } label: {
+                Text("Search")
+                    .font(.labelMedium)
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, Spacing.sm)
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Search")
+        }
+        .padding(.horizontal, Spacing.screenHorizontal)
+        .padding(.top, Spacing.xs)
+        .padding(.bottom, Spacing.xxs)
+    }
+    
     // MARK: - Active Filter Pills
     
     private var activeFilterPills: some View {
@@ -154,6 +230,33 @@ struct FilterBar: View {
             }
             .padding(.horizontal, Spacing.screenHorizontal)
             .padding(.vertical, Spacing.xs)
+        }
+    }
+    
+    @ViewBuilder
+    private var resultsRow: some View {
+        HStack {
+            if isLoading {
+                Text("Loading results...")
+                    .font(.caption)
+                    .foregroundStyle(.textTertiary)
+            } else if let totalCount {
+                Text("\(resultCount) of \(totalCount) shown")
+                    .font(.caption)
+                    .foregroundStyle(.textTertiary)
+            } else {
+                Text("\(resultCount) results")
+                    .font(.caption)
+                    .foregroundStyle(.textTertiary)
+            }
+            
+            Spacer()
+            
+            if filterState.hasCustomSort {
+                Text("Sorted by \(filterState.sortBy.displayName)")
+                    .font(.caption)
+                    .foregroundStyle(.textTertiary)
+            }
         }
     }
 }
@@ -192,33 +295,135 @@ struct FilterDropdown: View {
     }
 }
 
-// MARK: - More Options Button
+// MARK: - Refine Sheet
 
-struct MoreOptionsButton: View {
-    let hasActiveFilters: Bool
-    let sortBy: SortOption
-    var action: () -> Void
+struct RefineFiltersSheet: View {
+    @Bindable var filterState: FilterState
+    @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: Spacing.xxs) {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .medium))
-                
-                if hasActiveFilters {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: Spacing.lg) {
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        Text("Impact Level")
+                            .font(.titleSmall)
+                            .foregroundStyle(.textPrimary)
+                        
+                        FlowLayout(spacing: 10) {
+                            ForEach(ImpactLevel.allCases) { level in
+                                FilterChip(
+                                    label: level.displayName,
+                                    icon: level.iconName,
+                                    isSelected: filterState.selectedImpactLevel == level
+                                ) {
+                                    if filterState.selectedImpactLevel == level {
+                                        filterState.selectedImpactLevel = nil
+                                    } else {
+                                        filterState.selectedImpactLevel = level
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(Spacing.md)
+                    .background(Color.surfaceSecondary.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
+                    
+                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                        Text("Sort")
+                            .font(.titleSmall)
+                            .foregroundStyle(.textPrimary)
+                        
+                        VStack(spacing: Spacing.xs) {
+                            ForEach(SortOption.allCases) { option in
+                                Button {
+                                    if filterState.sortBy == option {
+                                        filterState.sortDirection = filterState.sortDirection == .ascending ? .descending : .ascending
+                                    } else {
+                                        filterState.sortBy = option
+                                    }
+                                } label: {
+                                    HStack(spacing: Spacing.sm) {
+                                        Image(systemName: option.iconName)
+                                            .foregroundStyle(Color.accentColor)
+                                        
+                                        Text(option.displayName)
+                                            .foregroundStyle(.textPrimary)
+                                        
+                                        Spacer()
+                                        
+                                        if filterState.sortBy == option {
+                                            Image(systemName: filterState.sortDirection.iconName)
+                                                .foregroundStyle(Color.accentColor)
+                                        }
+                                    }
+                                    .font(.bodyMedium)
+                                    .padding(.horizontal, Spacing.md)
+                                    .padding(.vertical, Spacing.sm)
+                                    .background(Color.surfaceSecondary)
+                                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    
+                    ChipGroup(
+                        title: "Character Archetype",
+                        options: Array(Archetype.allCases),
+                        selected: $filterState.advancedFilters.archetypes,
+                        labelProvider: { $0.displayName },
+                        iconProvider: { $0.iconName }
+                    )
+                    
+                    ChipGroup(
+                        title: "Moral Perception",
+                        options: Array(MoralValence.allCases),
+                        selected: $filterState.advancedFilters.moralValences,
+                        labelProvider: { $0.displayName },
+                        iconProvider: nil
+                    )
+                    
+                    ChipGroup(
+                        title: "Life Trajectory",
+                        options: Array(LifeArc.allCases),
+                        selected: $filterState.advancedFilters.lifeArcs,
+                        labelProvider: { $0.displayName },
+                        iconProvider: nil
+                    )
+                    
+                    ChipGroup(
+                        title: "Influence Mode",
+                        options: Array(InfluenceMode.allCases),
+                        selected: $filterState.advancedFilters.influenceModes,
+                        labelProvider: { $0.displayName },
+                        iconProvider: nil
+                    )
                 }
             }
-            .padding(.horizontal, Spacing.sm)
-            .padding(.vertical, Spacing.xs)
-            .background(hasActiveFilters ? Color.accentColor.opacity(0.1) : Color.surfaceSecondary)
-            .foregroundStyle(hasActiveFilters ? Color.accentColor : Color.textPrimary)
-            .clipShape(Capsule())
+            .padding(Spacing.md)
+            .navigationTitle("Refine Results")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if filterState.hasActiveFilters {
+                        Button("Clear All") {
+                            withAnimation(.spring(duration: 0.25)) {
+                                filterState.reset()
+                            }
+                        }
+                    }
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("More filter options")
     }
 }
 
@@ -413,200 +618,6 @@ struct RegionPickerView: View {
     }
 }
 
-// MARK: - More Options Menu
-
-struct MoreOptionsMenu: View {
-    @Bindable var filterState: FilterState
-    var onAdvancedTap: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationStack {
-            List {
-                // Impact Level Section
-                Section("Impact Level") {
-                    ForEach(ImpactLevel.allCases) { level in
-                        Button {
-                            if filterState.selectedImpactLevel == level {
-                                filterState.selectedImpactLevel = nil
-                            } else {
-                                filterState.selectedImpactLevel = level
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: level.iconName)
-                                    .foregroundStyle(Color.accentColor)
-                                    .frame(width: 24)
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(level.displayName)
-                                        .foregroundStyle(.textPrimary)
-                                    Text(level.subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(.textTertiary)
-                                }
-                                
-                                Spacer()
-                                
-                                if filterState.selectedImpactLevel == level {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(Color.accentColor)
-                                        .fontWeight(.semibold)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                
-                // Sort Section
-                Section("Sort By") {
-                    ForEach(SortOption.allCases) { option in
-                        Button {
-                            if filterState.sortBy == option {
-                                filterState.sortDirection = filterState.sortDirection == .ascending ? .descending : .ascending
-                            } else {
-                                filterState.sortBy = option
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: option.iconName)
-                                    .foregroundStyle(Color.accentColor)
-                                    .frame(width: 24)
-                                
-                                Text(option.displayName)
-                                    .foregroundStyle(.textPrimary)
-                                
-                                Spacer()
-                                
-                                if filterState.sortBy == option {
-                                    Image(systemName: filterState.sortDirection.iconName)
-                                        .foregroundStyle(Color.accentColor)
-                                        .fontWeight(.semibold)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                
-                // Advanced Filters Section
-                Section {
-                    Button {
-                        onAdvancedTap()
-                    } label: {
-                        HStack {
-                            Image(systemName: "slider.horizontal.3")
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 24)
-                            
-                            Text("Advanced Filters")
-                                .foregroundStyle(.textPrimary)
-                            
-                            Spacer()
-                            
-                            if filterState.hasAdvancedFilters {
-                                Text("\(filterState.advancedFilters.activeCount)")
-                                    .font(.caption2)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor)
-                                    .clipShape(Capsule())
-                            }
-                            
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.textTertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .listStyle(.insetGrouped)
-            .navigationTitle("More Options")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
-                }
-            }
-        }
-        .frame(minWidth: 320, minHeight: 500)
-    }
-}
-
-// MARK: - Advanced Filters Sheet
-
-struct AdvancedFiltersSheet: View {
-    @Bindable var filterState: FilterState
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: Spacing.lg) {
-                    // Archetype
-                    ChipGroup(
-                        title: "Character Archetype",
-                        options: Array(Archetype.allCases),
-                        selected: $filterState.advancedFilters.archetypes,
-                        labelProvider: { $0.displayName },
-                        iconProvider: { $0.iconName }
-                    )
-                    
-                    // Moral Valence
-                    ChipGroup(
-                        title: "Moral Perception",
-                        options: Array(MoralValence.allCases),
-                        selected: $filterState.advancedFilters.moralValences,
-                        labelProvider: { $0.displayName },
-                        iconProvider: nil
-                    )
-                    
-                    // Life Arc
-                    ChipGroup(
-                        title: "Life Trajectory",
-                        options: Array(LifeArc.allCases),
-                        selected: $filterState.advancedFilters.lifeArcs,
-                        labelProvider: { $0.displayName },
-                        iconProvider: nil
-                    )
-                    
-                    // Influence Mode
-                    ChipGroup(
-                        title: "Influence Mode",
-                        options: Array(InfluenceMode.allCases),
-                        selected: $filterState.advancedFilters.influenceModes,
-                        labelProvider: { $0.displayName },
-                        iconProvider: nil
-                    )
-                }
-                .padding(Spacing.md)
-            }
-            .navigationTitle("Advanced Filters")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    if filterState.hasAdvancedFilters {
-                        Button("Clear") {
-                            withAnimation(.spring(duration: 0.25)) {
-                                filterState.advancedFilters.reset()
-                            }
-                        }
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Previews
 
 #Preview("Filter Bar") {
@@ -615,7 +626,7 @@ struct AdvancedFiltersSheet: View {
         
         var body: some View {
             VStack {
-                FilterBar(filterState: filterState)
+                FilterBar(filterState: filterState, resultCount: 16, totalCount: 80, isLoading: false)
                 
                 Spacer()
                 

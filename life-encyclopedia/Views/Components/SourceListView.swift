@@ -61,6 +61,17 @@ struct SourceListView: View {
 struct SourceRowSimple: View {
     let source: Source
     
+    private var openableURLString: String {
+        source.deepLinkURL ?? source.url
+    }
+    
+    private var factCheckQuote: String? {
+        CitationDeepLinkBuilder.bestQuote(
+            relevantQuote: source.relevantQuote,
+            contentSnippet: source.contentSnippet
+        )
+    }
+    
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: source.sourceType.iconName)
@@ -79,13 +90,20 @@ struct SourceRowSimple: View {
                         .font(.caption)
                         .foregroundStyle(.textTertiary)
                 }
+                
+                if let factCheckQuote {
+                    Text("\"\(factCheckQuote)\"")
+                        .font(.caption2)
+                        .foregroundStyle(.textSecondary)
+                        .lineLimit(2)
+                }
             }
             
             Spacer()
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            if let url = URL(string: source.url) {
+            if let url = URL(string: openableURLString) {
                 UIApplication.shared.open(url)
             }
         }

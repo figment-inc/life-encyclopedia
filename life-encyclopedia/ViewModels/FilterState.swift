@@ -12,6 +12,14 @@ import SwiftUI
 @Observable
 final class FilterState {
     
+    // MARK: - Search
+    
+    /// Draft search text while the user types.
+    var searchText: String = ""
+    
+    /// Applied search text used for querying and filtering.
+    var committedSearchText: String = ""
+    
     // MARK: - Primary Filters (Always Visible)
     
     /// Selected eras (simplified time periods)
@@ -43,6 +51,7 @@ final class FilterState {
     
     /// Total number of active primary filters
     var activeFilterCount: Int {
+        (normalizedSearchText.isEmpty ? 0 : 1) +
         selectedEras.count +
         selectedDomains.count +
         selectedRegions.count +
@@ -70,6 +79,15 @@ final class FilterState {
     /// Get all active filters as displayable pills
     var activeFilterPills: [FilterPill] {
         var pills: [FilterPill] = []
+        
+        if !normalizedSearchText.isEmpty {
+            pills.append(FilterPill(
+                id: "search",
+                label: "\"\(normalizedSearchText)\"",
+                icon: "magnifyingglass",
+                category: .coreIdentity
+            ))
+        }
         
         // Era filters
         for era in selectedEras {
@@ -151,10 +169,36 @@ final class FilterState {
         return pills
     }
     
+    var querySignature: String {
+        let parts: [String] = [
+            "q:\(normalizedSearchText.lowercased())",
+            "eras:\(selectedEras.map(\.rawValue).sorted().joined(separator: ","))",
+            "domains:\(selectedDomains.map(\.rawValue).sorted().joined(separator: ","))",
+            "regions:\(selectedRegions.map(\.rawValue).sorted().joined(separator: ","))",
+            "impact:\(selectedImpactLevel?.rawValue ?? "-")",
+            "archetypes:\(advancedFilters.archetypes.map(\.rawValue).sorted().joined(separator: ","))",
+            "valences:\(advancedFilters.moralValences.map(\.rawValue).sorted().joined(separator: ","))",
+            "arcs:\(advancedFilters.lifeArcs.map(\.rawValue).sorted().joined(separator: ","))",
+            "influence:\(advancedFilters.influenceModes.map(\.rawValue).sorted().joined(separator: ","))",
+            "sort:\(sortBy.rawValue):\(sortDirection.rawValue)"
+        ]
+        return parts.joined(separator: "|")
+    }
+    
+    var normalizedSearchText: String {
+        committedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    var normalizedDraftSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
     // MARK: - Methods
     
     /// Reset all filters to defaults
     func reset() {
+        searchText = ""
+        committedSearchText = ""
         selectedEras = []
         selectedDomains = []
         selectedRegions = []
@@ -174,6 +218,11 @@ final class FilterState {
     
     /// Remove a specific filter by pill ID
     func removeFilter(pillId: String) {
+        if pillId == "search" {
+            clearSearch()
+            return
+        }
+        
         let parts = pillId.split(separator: "-", maxSplits: 1)
         guard parts.count == 2 else { return }
         
@@ -344,8 +393,55 @@ final class FilterState {
     
     /// Filter and sort an array of people
     func apply(to people: [Person]) -> [Person] {
-        let filtered = people.filter { matches($0) }
+        let filtered = people.filter { person in
+            if !normalizedSearchText.isEmpty &&
+                !person.name.localizedCaseInsensitiveContains(normalizedSearchText) {
+                return false
+            }
+            return matches(person)
+        }
         return sorted(filtered)
+    }
+    
+    /// Build a unified server query from current UI state.
+    func makePeopleQuery(page: Int, pageSize: Int) -> PeopleQuery {
+        PeopleQuery(
+            searchText: normalizedSearchText,
+            selectedEras: selectedEras,
+            selectedDomains: selectedDomains,
+            selectedRegions: selectedRegions,
+            selectedImpactLevel: selectedImpactLevel,
+            advancedFilters: advancedFilters,
+            sortBy: sortBy,
+            sortDirection: sortDirection,
+            page: max(1, page),
+            pageSize: max(1, pageSize)
+        )
+    }
+    
+    /// Apply refinements that are currently easier to compute on-device.
+    /// This keeps server querying broad while preserving richer local behavior.
+    func applyClientRefinements(to people: [Person], includeSearchFallback: Bool = false) -> [Person] {
+        let filtered = people.filter { person in
+            if includeSearchFallback && !normalizedSearchText.isEmpty &&
+                !person.name.localizedCaseInsensitiveContains(normalizedSearchText) {
+                return false
+            }
+            return matches(person)
+        }
+        
+        return sorted(filtered)
+    }
+    
+    /// Apply the currently typed search text to active querying/filtering state.
+    func commitSearch() {
+        committedSearchText = normalizedDraftSearchText
+    }
+    
+    /// Clear draft and committed search text.
+    func clearSearch() {
+        searchText = ""
+        committedSearchText = ""
     }
 }
 

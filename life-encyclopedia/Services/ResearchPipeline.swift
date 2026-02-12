@@ -99,7 +99,8 @@ enum PipelineError: LocalizedError {
 
 // MARK: - Research Pipeline
 
-actor ResearchPipeline {
+@MainActor
+final class ResearchPipeline {
     
     // MARK: - Properties
     
@@ -144,15 +145,22 @@ actor ResearchPipeline {
     // MARK: - Initialization
     
     init(
-        tavilyService: TavilyService = TavilyService(),
-        claudeService: ClaudeService = ClaudeService(),
-        sourceFilter: SourceFilter = SourceFilter(),
-        filterEnrichmentService: FilterEnrichmentService = FilterEnrichmentService()
+        tavilyService: TavilyService,
+        claudeService: ClaudeService,
+        sourceFilter: SourceFilter,
+        filterEnrichmentService: FilterEnrichmentService
     ) {
         self.tavilyService = tavilyService
         self.claudeService = claudeService
         self.sourceFilter = sourceFilter
         self.filterEnrichmentService = filterEnrichmentService
+    }
+    
+    init() {
+        self.tavilyService = TavilyService()
+        self.claudeService = ClaudeService()
+        self.sourceFilter = SourceFilter()
+        self.filterEnrichmentService = FilterEnrichmentService()
     }
     
     // MARK: - Public Methods
@@ -172,7 +180,7 @@ actor ResearchPipeline {
     ///   - name: Person's name to research
     ///   - config: Pipeline configuration
     /// - Returns: VerifiedPerson with all sources and verification summary
-    func researchPerson(name: String, config: Configuration = .default) async throws -> VerifiedPerson {
+    func researchPerson(name: String, config: Configuration) async throws -> VerifiedPerson {
         isCancelled = false
         
         // Stage 1: Discovery
@@ -278,7 +286,7 @@ actor ResearchPipeline {
         
         reportProgress(stage: .sourceCollection, progress: 1.0, message: "Collected \(topSources.count) authoritative sources", sources: topSources.count, events: 0, verified: 0)
         
-        return topSources
+        return prepareCitationSources(topSources)
     }
     
     // MARK: - Stage 3: Event Generation
@@ -309,10 +317,23 @@ actor ResearchPipeline {
         
         do {
             let person = try await claudeService.generateHistoricalEvents(name: name, context: fullContext)
+            let eventsWithCitationLinks = person.events.map { eventWithPreparedSources($0) }
+            let personWithCitationLinks = Person(
+                id: person.id,
+                name: person.name,
+                birthDate: person.birthDate,
+                deathDate: person.deathDate,
+                summary: person.summary,
+                events: eventsWithCitationLinks,
+                createdAt: person.createdAt,
+                filterMetadata: person.filterMetadata,
+                viewCount: person.viewCount,
+                lastViewedAt: person.lastViewedAt
+            )
             
             reportProgress(stage: .eventGeneration, progress: 1.0, message: "Generated \(person.events.count) events", sources: sources.count, events: person.events.count, verified: 0)
             
-            return person
+            return personWithCitationLinks
         } catch {
             throw PipelineError.eventGenerationFailed(error)
         }
@@ -322,6 +343,10 @@ actor ResearchPipeline {
     
     private func verifyEvents(events: [HistoricalEvent], personName: String, config: Configuration) async throws -> [HistoricalEvent] {
         var verifiedEvents: [HistoricalEvent] = []
+        
+        func normalized(_ value: String) -> String {
+            value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
         
         // Determine which events to verify
         let eventsToVerify: [HistoricalEvent]
@@ -347,11 +372,27 @@ actor ResearchPipeline {
                 events: eventTuples
             )
             
+            var verificationsByEventID: [UUID: EventVerification] = [:]
+            for (index, eventToVerify) in eventsToVerify.enumerated() {
+                guard index < verifications.count else { continue }
+                
+                let verification = verifications[index]
+                let isEventAligned = normalized(verification.event) == normalized(eventToVerify.title)
+                let isDateAligned = normalized(verification.date) == normalized(eventToVerify.date)
+                
+                guard isEventAligned && isDateAligned else {
+                    #if DEBUG
+                    print("ResearchPipeline: Skipping mismatched verification for event '\(eventToVerify.title)'")
+                    #endif
+                    continue
+                }
+                
+                verificationsByEventID[eventToVerify.id] = verification
+            }
+            
             // Map verifications back to events - add sources from verification
-            for (index, event) in events.enumerated() {
-                if let verificationIndex = eventsToVerify.firstIndex(where: { $0.id == event.id }),
-                   verificationIndex < verifications.count {
-                    let verification = verifications[verificationIndex]
+            for event in events {
+                if let verification = verificationsByEventID[event.id] {
                     
                     // Create updated event with sources from verification
                     let verifiedEvent = HistoricalEvent(
@@ -363,7 +404,7 @@ actor ResearchPipeline {
                         sourceURL: event.sourceURL,
                         eventType: event.eventType,
                         datePrecision: verification.datePrecision,
-                        sources: verification.matchingSources
+                        sources: prepareCitationSources(verification.matchingSources)
                     )
                     verifiedEvents.append(verifiedEvent)
                     verified += 1
@@ -372,13 +413,13 @@ actor ResearchPipeline {
                     reportProgress(stage: .factVerification, progress: progress, message: "Verified \(verified)/\(totalToVerify) events", sources: 0, events: events.count, verified: verified)
                 } else {
                     // Event wasn't verified, keep original
-                    verifiedEvents.append(event)
+                    verifiedEvents.append(eventWithPreparedSources(event))
                 }
             }
             
         } catch {
             // On verification failure, return events with unverified status
-            verifiedEvents = events
+            verifiedEvents = events.map { eventWithPreparedSources($0) }
         }
         
         reportProgress(stage: .factVerification, progress: 1.0, message: "Verification complete", sources: 0, events: events.count, verified: verified)
@@ -429,20 +470,20 @@ actor ResearchPipeline {
                         sourceURL: event.sourceURL,
                         eventType: event.eventType,
                         datePrecision: event.datePrecision,
-                        sources: sourceFilter.topSources(allSources, limit: config.maxSourcesPerEvent)
+                        sources: prepareCitationSources(sourceFilter.topSources(allSources, limit: config.maxSourcesPerEvent))
                     )
                     enrichedEvents.append(enrichedEvent)
                     
                 } catch {
                     // Keep original on error
-                    enrichedEvents.append(event)
+                    enrichedEvents.append(eventWithPreparedSources(event))
                 }
                 
                 enriched += 1
                 let progress = Double(enriched) / Double(max(1, totalToEnrich))
                 reportProgress(stage: .enrichment, progress: progress, message: "Enriched \(enriched)/\(totalToEnrich) events", sources: 0, events: events.count, verified: 0)
             } else {
-                enrichedEvents.append(event)
+                enrichedEvents.append(eventWithPreparedSources(event))
             }
         }
         
@@ -482,5 +523,49 @@ actor ResearchPipeline {
             totalSources: sources.count,
             authoritativeSources: authoritativeCount
         )
+    }
+    
+    private func eventWithPreparedSources(_ event: HistoricalEvent, sources overrideSources: [Source]? = nil) -> HistoricalEvent {
+        let sources = prepareCitationSources(overrideSources ?? event.sources)
+        return HistoricalEvent(
+            id: event.id,
+            date: event.date,
+            title: event.title,
+            description: event.description,
+            citation: event.citation,
+            sourceURL: event.sourceURL,
+            eventType: event.eventType,
+            datePrecision: event.datePrecision,
+            sources: sources
+        )
+    }
+    
+    private func prepareCitationSources(_ sources: [Source]) -> [Source] {
+        sources.map { source in
+            let quote = CitationDeepLinkBuilder.bestQuote(
+                relevantQuote: source.relevantQuote,
+                contentSnippet: source.contentSnippet
+            )
+            let deepLinkURL = CitationDeepLinkBuilder.resolvedURLString(
+                baseURL: source.url,
+                relevantQuote: quote,
+                deepLinkHint: source.deepLinkURL
+            )
+            
+            return Source(
+                id: source.id,
+                title: source.title,
+                url: source.url,
+                sourceType: source.sourceType,
+                publisher: source.publisher,
+                author: source.author,
+                publishDate: source.publishDate,
+                accessDate: source.accessDate,
+                reliabilityScore: source.reliabilityScore,
+                contentSnippet: source.contentSnippet,
+                relevantQuote: quote,
+                deepLinkURL: deepLinkURL
+            )
+        }
     }
 }

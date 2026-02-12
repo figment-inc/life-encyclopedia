@@ -33,21 +33,18 @@ life-encyclopedia/
 
 ### 1. API Keys
 
-Edit `life-encyclopedia/Services/APIConfig.swift` with your credentials:
+The app reads credentials from environment variables at runtime.
 
-```swift
-enum APIConfig {
-    // Anthropic (Claude) - https://console.anthropic.com/
-    static let anthropicAPIKey = "your-anthropic-key"
-    
-    // Tavily - https://tavily.com/
-    static let tavilyAPIKey = "your-tavily-key"
-    
-    // Supabase - https://supabase.com/dashboard
-    static let supabaseURL = "your-project-url"
-    static let supabaseAnonKey = "your-anon-key"
-}
+Create/update a local `.env` (already gitignored) in the project root:
+
+```bash
+ANTHROPIC_API_KEY=your-anthropic-key
+TAVILY_API_KEY=your-tavily-key
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
+
+Then ensure these values are injected into your Xcode run environment (for example via your Scheme or local xcconfig setup).
 
 ### 2. Supabase Database
 
@@ -58,6 +55,22 @@ enum APIConfig {
 ### 3. Build & Run
 
 Open `life-encyclopedia.xcodeproj` in Xcode and run on a simulator or device.
+
+## Verify Supabase Connection
+
+Before debugging app behavior, confirm the DB connection details:
+
+1. `SUPABASE_URL` exactly matches your project URL in the Supabase dashboard.
+2. `SUPABASE_ANON_KEY` is copied from the same project as that URL.
+3. A direct REST call to `people` succeeds:
+
+```bash
+curl "$SUPABASE_URL/rest/v1/people?select=id,name&limit=5" \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H "Authorization: Bearer $SUPABASE_ANON_KEY"
+```
+
+If this call fails with 401/403/404, the app will fail similarly until URL/key or RLS policies are corrected.
 
 ## How It Works
 
