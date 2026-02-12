@@ -9,6 +9,13 @@ import SwiftUI
 
 @main
 struct life_encyclopediaApp: App {
+    
+    init() {
+        #if DEBUG
+        APIConfig.logConfiguration()
+        #endif
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()

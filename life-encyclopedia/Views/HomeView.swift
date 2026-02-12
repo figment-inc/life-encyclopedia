@@ -20,6 +20,8 @@ struct HomeView: View {
     @State private var showCreateSheet = false
     @State private var personPendingDeletion: Person?
     @State private var debouncedReloadTask: Task<Void, Never>?
+    @State private var navigationPath = NavigationPath()
+    @State private var pendingNavigationPerson: Person?
     
     @State private var filterState = FilterState()
     
@@ -37,7 +39,7 @@ struct HomeView: View {
     }
     
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
                 if !isLibraryEmpty || !loadedPeople.isEmpty {
                     FilterBar(
@@ -108,8 +110,19 @@ struct HomeView: View {
             } message: {
                 Text("This will permanently remove this profile from your library.")
             }
-            .sheet(isPresented: $showCreateSheet) {
-                CreateView()
+            .sheet(isPresented: $showCreateSheet, onDismiss: {
+                if let person = pendingNavigationPerson {
+                    pendingNavigationPerson = nil
+                    Task {
+                        await reloadFirstPage()
+                        navigationPath.append(person)
+                    }
+                }
+            }) {
+                CreateView(onPersonCreated: { person in
+                    pendingNavigationPerson = person
+                    showCreateSheet = false
+                })
             }
             .onChange(of: filterState.querySignature) { _, _ in
                 scheduleDebouncedReload()

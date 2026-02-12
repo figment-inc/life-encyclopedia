@@ -17,6 +17,7 @@ final class SupabaseService {
         case invalidResponse
         case invalidConfiguration(String)
         case requestFailed(statusCode: Int, message: String)
+        case decodingFailed(String)
         case networkError(Error)
         case notConfigured
         
@@ -30,6 +31,8 @@ final class SupabaseService {
                 return message
             case .requestFailed(_, let message):
                 return message
+            case .decodingFailed(let detail):
+                return "Failed to decode database response: \(detail)"
             case .networkError(let error):
                 return "Network error: \(error.localizedDescription)"
             case .notConfigured:
@@ -394,8 +397,10 @@ final class SupabaseService {
         request.httpMethod = "GET"
         applyCommonHeaders(to: &request)
         
+        var responseData = Data()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            responseData = data
             try validateResponse(response, data: data, expectedStatusCodes: [200])
             
             let supabasePeople = try decoder.decode([SupabasePerson].self, from: data)
@@ -403,6 +408,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in searchPeople: \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)
@@ -446,8 +457,10 @@ final class SupabaseService {
         request.httpMethod = "GET"
         applyCommonHeaders(to: &request)
         
+        var responseData = Data()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            responseData = data
             try validateResponse(response, data: data, expectedStatusCodes: [200])
             
             let supabasePeople = try decoder.decode([SupabasePerson].self, from: data)
@@ -467,6 +480,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in searchPeopleForNameSuggestions: \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)
@@ -499,8 +518,10 @@ final class SupabaseService {
         applyCommonHeaders(to: &request)
         request.setValue("count=exact", forHTTPHeaderField: "Prefer")
         
+        var responseData = Data()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            responseData = data
             try validateResponse(response, data: data, expectedStatusCodes: [200])
             
             let supabasePeople = try decoder.decode([SupabasePerson].self, from: data)
@@ -524,6 +545,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in fetchPeople: \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)
@@ -544,8 +571,10 @@ final class SupabaseService {
         request.httpMethod = "GET"
         applyCommonHeaders(to: &request)
         
+        var responseData = Data()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            responseData = data
             try validateResponse(response, data: data, expectedStatusCodes: [200])
             
             let supabasePeople = try decoder.decode([SupabasePerson].self, from: data)
@@ -553,6 +582,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in fetchPeople(byDomain:): \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)
@@ -607,8 +642,10 @@ final class SupabaseService {
         let insertData = PersonInsert(from: person)
         request.httpBody = try encoder.encode(insertData)
         
+        var responseData = Data()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            responseData = data
             try validateResponse(response, data: data, expectedStatusCodes: [201])
             
             let savedPeople = try decoder.decode([SupabasePerson].self, from: data)
@@ -620,6 +657,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in savePerson: \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)
@@ -660,8 +703,10 @@ final class SupabaseService {
         getRequest.httpMethod = "GET"
         applyCommonHeaders(to: &getRequest)
         
+        var responseData = Data()
         do {
             let (getData, getResponse) = try await URLSession.shared.data(for: getRequest)
+            responseData = getData
             try validateResponse(getResponse, data: getData, expectedStatusCodes: [200])
             
             let people = try decoder.decode([SupabasePerson].self, from: getData)
@@ -687,6 +732,12 @@ final class SupabaseService {
             
         } catch let error as SupabaseError {
             throw error
+        } catch let decodingError as DecodingError {
+            #if DEBUG
+            print("[SupabaseService] Decoding error in incrementViewCount: \(decodingError)")
+            print("[SupabaseService] Raw response: \(String(data: responseData, encoding: .utf8) ?? "nil")")
+            #endif
+            throw SupabaseError.decodingFailed(decodingError.localizedDescription)
         } catch let error {
             try rethrowCancellationIfNeeded(error)
             throw SupabaseError.networkError(error)

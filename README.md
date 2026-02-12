@@ -15,10 +15,13 @@ life-encyclopedia/
 ├── Models/
 │   └── Person.swift            # Data models for Person and HistoricalEvent
 ├── Services/
-│   ├── APIConfig.swift         # API keys configuration
-│   ├── TavilyService.swift     # Verify people via web search
-│   ├── ClaudeService.swift     # Generate historical events via Claude AI
-│   └── SupabaseService.swift   # Database CRUD operations
+│   ├── APIConfig.swift              # API keys configuration
+│   ├── TavilyService.swift          # Verify people via web search
+│   ├── WikidataService.swift        # Structured biographical data from Wikidata
+│   ├── KnowledgeGraphService.swift  # Google Knowledge Graph entity data
+│   ├── ClaudeService.swift          # Generate historical events via Claude AI
+│   ├── ResearchPipeline.swift       # 5-stage multi-source research pipeline
+│   └── SupabaseService.swift        # Database CRUD operations
 ├── Views/
 │   ├── HomeView.swift          # List of generated people
 │   ├── CreateView.swift        # Search and verification flow
@@ -40,9 +43,12 @@ Create/update a local `.env` (already gitignored) in the project root:
 ```bash
 ANTHROPIC_API_KEY=your-anthropic-key
 TAVILY_API_KEY=your-tavily-key
+GOOGLE_API_KEY=your-google-api-key      # Optional: Google Knowledge Graph (free, 500 req/day)
 SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
+
+> **Note**: `GOOGLE_API_KEY` is optional. Get one free at [Google Cloud Console](https://console.cloud.google.com/apis/credentials) and enable the Knowledge Graph Search API. Wikidata requires no API key.
 
 Then ensure these values are injected into your Xcode run environment (for example via your Scheme or local xcconfig setup).
 
@@ -76,14 +82,18 @@ If this call fails with 401/403/404, the app will fail similarly until URL/key o
 
 1. **Search**: Enter a person's name in the Create tab
 2. **Verify**: Tavily searches the web to confirm the person exists
-3. **Generate**: Claude AI researches and generates 10-15 historical events
-4. **Browse**: Swipe left/right through events with dates and citations
-5. **Save**: Store the person in Supabase for future viewing
+3. **Discover**: Wikidata and Google Knowledge Graph provide structured biographical facts in parallel
+4. **Generate**: Claude AI uses all sources to generate 15-30 historical events
+5. **Verify**: Events are fact-checked against multiple authoritative sources
+6. **Browse**: Swipe left/right through events with dates and citations
+7. **Save**: Store the person in Supabase for future viewing
 
 ## Tech Stack
 
 - **SwiftUI** - UI framework
-- **Tavily API** - Web search for person verification
+- **Tavily API** - Web search for person verification and source discovery
+- **Wikidata API** - Structured biographical data (birth, death, awards, occupations, etc.)
+- **Google Knowledge Graph API** - Entity descriptions and classifications
 - **Claude API** - AI-powered historical event generation
 - **Supabase** - PostgreSQL database for persistence
 
@@ -92,3 +102,4 @@ If this call fails with 401/403/404, the app will fail similarly until URL/key o
 - iOS 17.0+
 - Xcode 15.0+
 - Active API keys for Anthropic, Tavily, and Supabase
+- Optional: Google API key for Knowledge Graph (free tier)

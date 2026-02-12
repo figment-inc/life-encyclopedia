@@ -230,59 +230,83 @@ struct EventPageView: View {
 
 struct FootnotesSection: View {
     let event: HistoricalEvent
-    @State private var isSourcesExpanded = false
+    @State private var isSectionRevealed = false
+    
+    private let springAnimation: Animation = .spring(response: 0.35, dampingFraction: 0.85)
     
     private var visibleSources: [Source] {
-        isSourcesExpanded ? event.sources : Array(event.sources.prefix(2))
+        if !isSectionRevealed { return [] }
+        return event.sources
     }
     
-    private var hiddenCount: Int {
-        max(0, event.sources.count - 2)
+    private var sourceCountLabel: String {
+        let count = event.sources.count
+        return "\(count) Source\(count == 1 ? "" : "s")"
+    }
+    
+    private func triggerHaptic() {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred()
     }
     
     var body: some View {
         if !event.sources.isEmpty || event.hasCitation {
-            VStack(alignment: .leading, spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
                 // Subtle top border
                 Rectangle()
-                    .fill(Color.textTertiary.opacity(0.2))
+                    .fill(Color.textTertiary.opacity(0.15))
                     .frame(height: 0.5)
                 
-                // Refined label
-                Text("Sources")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.textTertiary)
-                    .textCase(.uppercase)
-                    .tracking(0.8)
-                
-                if !event.sources.isEmpty {
-                    // Clean vertical list - show first 2 by default, expandable
-                    VStack(alignment: .leading, spacing: Spacing.md) {
-                        ForEach(Array(visibleSources.enumerated()), id: \.element.id) { index, source in
-                            SourceFootnote(source: source, number: index + 1)
-                        }
-                        
-                        // Show expand/collapse button when 3+ sources
-                        if hiddenCount > 0 {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isSourcesExpanded.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: Spacing.xs) {
-                                    Text(isSourcesExpanded ? "Show less" : "Show \(hiddenCount) more")
-                                        .font(.system(size: 13, weight: .medium))
-                                    Image(systemName: isSourcesExpanded ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundStyle(.textTertiary)
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.leading, 24 + Spacing.sm) // Align with source text
-                        }
+                // Disclosure header row -- tappable to reveal/hide sources
+                Button {
+                    triggerHaptic()
+                    withAnimation(springAnimation) {
+                        isSectionRevealed.toggle()
                     }
-                } else if let citation = event.citation, !citation.isEmpty {
-                    LegacyCitationFootnote(citation: citation)
+                } label: {
+                    HStack(spacing: Spacing.xs) {
+                        Text("Sources")
+                            .font(.system(size: 11, weight: .medium))
+                            .textCase(.uppercase)
+                            .tracking(0.8)
+                        
+                        Text(sourceCountLabel)
+                            .font(.system(size: 11, weight: .regular))
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .rotationEffect(.degrees(isSectionRevealed ? 180 : 0))
+                    }
+                    .foregroundStyle(.textTertiary)
+                    .padding(.vertical, Spacing.xs)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isSectionRevealed ? "Collapse sources" : "Expand sources")
+                .accessibilityHint("\(sourceCountLabel) available")
+                
+                // Source list -- revealed on tap
+                if isSectionRevealed {
+                    if !event.sources.isEmpty {
+                        VStack(alignment: .leading, spacing: Spacing.sm) {
+                            ForEach(Array(visibleSources.enumerated()), id: \.element.id) { index, source in
+                                SourceFootnote(source: source, number: index + 1)
+                                    .transition(.asymmetric(
+                                        insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                        removal: .opacity
+                                    ))
+                                    .animation(
+                                        springAnimation.delay(Double(index) * 0.05),
+                                        value: visibleSources.count
+                                    )
+                            }
+                        }
+                    } else if let citation = event.citation, !citation.isEmpty {
+                        LegacyCitationFootnote(citation: citation)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
             }
             .padding(.horizontal, Spacing.screenHorizontal)
@@ -293,7 +317,7 @@ struct FootnotesSection: View {
     }
 }
 
-// MARK: - Source Footnote (Minimal academic style)
+// MARK: - Source Footnote (Editorial style)
 
 struct SourceFootnote: View {
     let source: Source
@@ -311,43 +335,86 @@ struct SourceFootnote: View {
         )
     }
     
+    /// Metadata string: domain + publish date joined by centered dot
+    private var metadataText: String {
+        var parts: [String] = []
+        if let domain = source.domain {
+            parts.append(domain)
+        }
+        if let publisher = source.publisher, !publisher.isEmpty {
+            parts.append(publisher)
+        } else if let publishDate = source.publishDate, !publishDate.isEmpty {
+            parts.append(publishDate)
+        }
+        return parts.joined(separator: "  \u{00B7}  ")
+    }
+    
     var body: some View {
         Button {
             if let url = URL(string: openableURLString) {
                 openURL(url)
             }
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
-                // Number - right-aligned in fixed width
-                Text("\(number).")
-                    .font(.system(size: 13, weight: .regular, design: .serif))
-                    .foregroundStyle(.textTertiary)
-                    .frame(width: 24, alignment: .trailing)
+            HStack(alignment: .top, spacing: Spacing.sm) {
+                // Source type icon with superscript number
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: source.sourceType.iconName)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.textTertiary)
+                        .frame(width: 24, height: 24, alignment: .center)
+                    
+                    // Superscript number
+                    Text("\(number)")
+                        .font(.system(size: 8, weight: .semibold, design: .serif))
+                        .foregroundStyle(.textTertiary)
+                        .offset(x: 6, y: -2)
+                }
+                .frame(width: 28)
                 
-                // Title and domain
-                VStack(alignment: .leading, spacing: 3) {
+                // Content column
+                VStack(alignment: .leading, spacing: 4) {
+                    // Title
                     Text(source.title)
-                        .font(.system(size: 14, weight: .regular))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.textPrimary)
+                        .lineLimit(2)
                         .multilineTextAlignment(.leading)
                     
-                    if let domain = source.domain {
-                        Text(domain)
-                            .font(.system(size: 12, weight: .regular))
+                    // Metadata line: domain · publish date
+                    if !metadataText.isEmpty {
+                        Text(metadataText)
+                            .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(.textTertiary)
                     }
                     
+                    // Blockquote-styled excerpt
                     if let factCheckQuote {
-                        Text("\"\(factCheckQuote)\"")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundStyle(.textSecondary)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
+                        HStack(alignment: .top, spacing: Spacing.xs) {
+                            // Left accent bar
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color.textTertiary.opacity(0.3))
+                                .frame(width: 2)
+                            
+                            Text(factCheckQuote)
+                                .font(.system(size: 12, weight: .regular, design: .serif))
+                                .italic()
+                                .foregroundStyle(.textSecondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.top, 2)
                     }
                 }
                 
                 Spacer(minLength: 0)
+                
+                // External link indicator
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.textTertiary.opacity(0.5))
+                    .padding(.top, 4)
             }
+            .padding(.vertical, Spacing.xs)
             .contentShape(Rectangle())
         }
         .buttonStyle(SourceButtonStyle())
@@ -356,12 +423,14 @@ struct SourceFootnote: View {
     }
 }
 
-// MARK: - Source Button Style (subtle press state)
+// MARK: - Source Button Style (scale + opacity press state)
 
 struct SourceButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.6 : 1.0)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
@@ -371,12 +440,12 @@ struct LegacyCitationFootnote: View {
     let citation: String
     
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
-            // Number - matching SourceFootnote alignment
-            Text("1.")
-                .font(.system(size: 13, weight: .regular, design: .serif))
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            // Icon matching new style
+            Image(systemName: "doc.text")
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(.textTertiary)
-                .frame(width: 24, alignment: .trailing)
+                .frame(width: 28)
             
             // Citation text
             Text(citation)
@@ -386,6 +455,7 @@ struct LegacyCitationFootnote: View {
             
             Spacer(minLength: 0)
         }
+        .padding(.vertical, Spacing.xs)
     }
 }
 

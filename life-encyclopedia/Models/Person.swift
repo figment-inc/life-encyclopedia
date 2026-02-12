@@ -76,6 +76,29 @@ struct FilterMetadata: Codable, Equatable {
         self.lifeArc = lifeArc
     }
     
+    // MARK: - Custom Decoder (handles missing keys from sparse database JSON)
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.birthYear = try container.decodeIfPresent(Int.self, forKey: .birthYear)
+        self.deathYear = try container.decodeIfPresent(Int.self, forKey: .deathYear)
+        self.birthplace = try container.decodeIfPresent(Birthplace.self, forKey: .birthplace)
+        self.nationality = try container.decodeIfPresent([String].self, forKey: .nationality) ?? []
+        self.culturalRegion = try container.decodeIfPresent(CulturalRegion.self, forKey: .culturalRegion)
+        self.century = try container.decodeIfPresent(Int.self, forKey: .century)
+        self.historicalPeriod = try container.decodeIfPresent(HistoricalPeriod.self, forKey: .historicalPeriod)
+        self.primaryDomain = try container.decodeIfPresent(Domain.self, forKey: .primaryDomain)
+        self.secondaryDomains = try container.decodeIfPresent([Domain].self, forKey: .secondaryDomains) ?? []
+        self.subRole = try container.decodeIfPresent(String.self, forKey: .subRole)
+        self.influenceModes = try container.decodeIfPresent([String: Int].self, forKey: .influenceModes) ?? [:]
+        self.geographicReach = try container.decodeIfPresent(GeographicReach.self, forKey: .geographicReach)
+        self.influenceLongevity = try container.decodeIfPresent(InfluenceLongevity.self, forKey: .influenceLongevity)
+        self.recognitionLevel = try container.decodeIfPresent(RecognitionLevel.self, forKey: .recognitionLevel)
+        self.archetype = try container.decodeIfPresent(Archetype.self, forKey: .archetype)
+        self.moralValence = try container.decodeIfPresent(MoralValence.self, forKey: .moralValence)
+        self.lifeArc = try container.decodeIfPresent(LifeArc.self, forKey: .lifeArc)
+    }
+    
     /// Empty metadata for new/unprocessed people
     static let empty = FilterMetadata()
     
@@ -363,6 +386,22 @@ struct SupabasePerson: Codable {
         case filterMetadata = "filter_metadata"
         case viewCount = "view_count"
         case lastViewedAt = "last_viewed_at"
+    }
+    
+    // MARK: - Custom Decoder (resilient against null created_at/events)
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.birthDate = try container.decodeIfPresent(String.self, forKey: .birthDate)
+        self.deathDate = try container.decodeIfPresent(String.self, forKey: .deathDate)
+        self.summary = try container.decode(String.self, forKey: .summary)
+        self.events = try container.decodeIfPresent([HistoricalEvent].self, forKey: .events) ?? []
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.filterMetadata = try container.decodeIfPresent(FilterMetadata.self, forKey: .filterMetadata)
+        self.viewCount = try container.decodeIfPresent(Int.self, forKey: .viewCount)
+        self.lastViewedAt = try container.decodeIfPresent(Date.self, forKey: .lastViewedAt)
     }
     
     func toPerson() -> Person {

@@ -8,6 +8,10 @@
 import SwiftUI
 
 struct CreateView: View {
+    // MARK: - Callback
+    
+    var onPersonCreated: ((Person) -> Void)?
+    
     // MARK: - State
     
     @State private var searchText = ""
@@ -58,9 +62,7 @@ struct CreateView: View {
     }
     
     private var currentStep: CreateStep {
-        if generatedPerson != nil {
-            return .result
-        } else if verification?.isVerified == true {
+        if verification?.isVerified == true {
             return .verified
         } else {
             return .search
@@ -75,8 +77,6 @@ struct CreateView: View {
                     searchView
                 case .verified:
                     verifiedView
-                case .result:
-                    resultView
                 }
             }
             .navigationTitle("Create")
@@ -313,21 +313,6 @@ struct CreateView: View {
             .padding(.vertical, Spacing.md)
         }
         .background(.ultraThinMaterial)
-    }
-    
-    // MARK: - Result View
-    
-    private var resultView: some View {
-        Group {
-            if let person = generatedPerson {
-                PersonDetailView(
-                    person: person,
-                    showSaveButton: true,
-                    onSave: handleSave,
-                    onDismiss: handleReset
-                )
-            }
-        }
     }
     
     // MARK: - Discovery Candidates
@@ -576,6 +561,8 @@ struct CreateView: View {
         errorMessage = nil
         pipelineProgress = nil
         
+        var generatedPerson: Person?
+        
         if useAdvancedPipeline {
             // Use the full research pipeline with fact verification
             do {
@@ -591,7 +578,6 @@ struct CreateView: View {
                 )
                 
                 generatedPerson = result.person
-                verifiedResult = result
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -614,24 +600,22 @@ struct CreateView: View {
             }
         }
         
+        // Auto-save to Supabase and notify parent
+        if let person = generatedPerson {
+            do {
+                if let existingPerson = try await supabaseService.findExistingPerson(matchingName: person.name) {
+                    onPersonCreated?(existingPerson)
+                } else {
+                    let savedPerson = try await supabaseService.savePerson(person)
+                    onPersonCreated?(savedPerson)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+        
         isGenerating = false
         pipelineProgress = nil
-    }
-    
-    private func handleSave() async {
-        guard let person = generatedPerson else { return }
-        
-        do {
-            if let existingPerson = try await supabaseService.findExistingPerson(matchingName: person.name) {
-                showExistingPerson(existingPerson)
-                return
-            }
-
-            _ = try await supabaseService.savePerson(person)
-            handleReset()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
     }
     
     private func handleReset() {
@@ -724,7 +708,6 @@ struct CreateView: View {
 enum CreateStep {
     case search
     case verified
-    case result
 }
 
 #Preview {

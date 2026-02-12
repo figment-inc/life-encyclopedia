@@ -20,6 +20,9 @@ struct SourceFilter {
         "britannica.com": (.encyclopedia, 0.95),
         "encyclopedia.com": (.encyclopedia, 0.85),
         
+        // Structured Data
+        "wikidata.org": (.wikidata, 0.90),
+        
         // Major News Outlets
         "nytimes.com": (.news, 0.90),
         "bbc.com": (.news, 0.90),
@@ -34,16 +37,26 @@ struct SourceFilter {
         "time.com": (.news, 0.80),
         "theatlantic.com": (.news, 0.80),
         
+        // Business/Finance
+        "forbes.com": (.news, 0.80),
+        "bloomberg.com": (.news, 0.85),
+        
         // Biography Sites
         "biography.com": (.biography, 0.80),
         "notablebiographies.com": (.biography, 0.70),
         "famousscientists.org": (.biography, 0.75),
+        "nndb.com": (.biography, 0.70),
+        "legacy.com": (.biography, 0.70),
+        "poetryfoundation.org": (.biography, 0.80),
         
         // Historical Archives
         "history.com": (.archive, 0.80),
         "archives.gov": (.official, 0.95),
         "loc.gov": (.official, 0.95),
         "nationalarchives.gov.uk": (.official, 0.95),
+        "snac.afl.archivists.org": (.archive, 0.85),
+        "findagrave.com": (.archive, 0.65),
+        "worldcat.org": (.archive, 0.80),
         
         // Academic/Educational
         "jstor.org": (.academic, 0.90),
@@ -51,6 +64,8 @@ struct SourceFilter {
         "academia.edu": (.academic, 0.75),
         "researchgate.net": (.academic, 0.75),
         "pubmed.ncbi.nlm.nih.gov": (.academic, 0.90),
+        "plato.stanford.edu": (.academic, 0.90),
+        "scholarpedia.org": (.academic, 0.85),
         
         // Official Government
         "whitehouse.gov": (.official, 0.95),
@@ -64,6 +79,18 @@ struct SourceFilter {
         "imdb.com": (.archive, 0.70),
         "grammy.com": (.official, 0.85),
         "oscars.org": (.official, 0.90),
+        
+        // Sports
+        "espn.com": (.news, 0.80),
+        "si.com": (.news, 0.75),
+        "sports-reference.com": (.archive, 0.80),
+        
+        // Entertainment/Arts
+        "allmusic.com": (.biography, 0.75),
+        "discogs.com": (.archive, 0.70),
+        "goodreads.com": (.biography, 0.70),
+        "moma.org": (.official, 0.85),
+        "artnet.com": (.biography, 0.70),
     ]
     
     /// Domain suffixes that indicate authoritative sources

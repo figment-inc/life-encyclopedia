@@ -17,6 +17,8 @@ enum SourceType: String, Codable, CaseIterable {
     case official
     case archive
     case encyclopedia
+    case wikidata
+    case knowledgeGraph
     case unknown
     
     var displayName: String {
@@ -28,6 +30,8 @@ enum SourceType: String, Codable, CaseIterable {
         case .official: return "Official"
         case .archive: return "Archive"
         case .encyclopedia: return "Encyclopedia"
+        case .wikidata: return "Wikidata"
+        case .knowledgeGraph: return "Knowledge Graph"
         case .unknown: return "Other"
         }
     }
@@ -41,6 +45,8 @@ enum SourceType: String, Codable, CaseIterable {
         case .official: return "building.columns"
         case .archive: return "archivebox"
         case .encyclopedia: return "books.vertical"
+        case .wikidata: return "list.bullet.rectangle"
+        case .knowledgeGraph: return "brain"
         case .unknown: return "link"
         }
     }
@@ -49,7 +55,9 @@ enum SourceType: String, Codable, CaseIterable {
     var baseReliabilityScore: Double {
         switch self {
         case .official: return 0.95
+        case .wikidata: return 0.90
         case .academic: return 0.90
+        case .knowledgeGraph: return 0.88
         case .encyclopedia: return 0.85
         case .wikipedia: return 0.80
         case .biography: return 0.75

@@ -108,9 +108,14 @@ final class ResearchPipeline {
     private let claudeService: ClaudeService
     private let sourceFilter: SourceFilter
     private let filterEnrichmentService: FilterEnrichmentService
+    private let wikidataService: WikidataService
+    private let knowledgeGraphService: KnowledgeGraphService
     
     private var isCancelled = false
     private var progressHandler: ((PipelineProgress) -> Void)?
+    
+    /// Structured context gathered during discovery, used in event generation
+    private var structuredContext: String = ""
     
     // MARK: - Configuration
     
@@ -148,12 +153,16 @@ final class ResearchPipeline {
         tavilyService: TavilyService,
         claudeService: ClaudeService,
         sourceFilter: SourceFilter,
-        filterEnrichmentService: FilterEnrichmentService
+        filterEnrichmentService: FilterEnrichmentService,
+        wikidataService: WikidataService = WikidataService(),
+        knowledgeGraphService: KnowledgeGraphService = KnowledgeGraphService()
     ) {
         self.tavilyService = tavilyService
         self.claudeService = claudeService
         self.sourceFilter = sourceFilter
         self.filterEnrichmentService = filterEnrichmentService
+        self.wikidataService = wikidataService
+        self.knowledgeGraphService = knowledgeGraphService
     }
     
     init() {
@@ -161,6 +170,8 @@ final class ResearchPipeline {
         self.claudeService = ClaudeService()
         self.sourceFilter = SourceFilter()
         self.filterEnrichmentService = FilterEnrichmentService()
+        self.wikidataService = WikidataService()
+        self.knowledgeGraphService = KnowledgeGraphService()
     }
     
     // MARK: - Public Methods
@@ -182,6 +193,7 @@ final class ResearchPipeline {
     /// - Returns: VerifiedPerson with all sources and verification summary
     func researchPerson(name: String, config: Configuration) async throws -> VerifiedPerson {
         isCancelled = false
+        structuredContext = ""
         
         // Stage 1: Discovery
         reportProgress(stage: .discovery, progress: 0.0, message: "Starting discovery...", sources: 0, events: 0, verified: 0)
@@ -246,23 +258,133 @@ final class ResearchPipeline {
         )
     }
     
-    // MARK: - Stage 1: Discovery
+    // MARK: - Stage 1: Discovery (Multi-Source)
     
     private func performDiscovery(name: String) async throws -> PersonDiscovery {
-        reportProgress(stage: .discovery, progress: 0.3, message: "Searching biographical sources...", sources: 0, events: 0, verified: 0)
+        reportProgress(stage: .discovery, progress: 0.1, message: "Searching multiple sources...", sources: 0, events: 0, verified: 0)
         
-        let discovery = try await tavilyService.discoverPerson(name: name)
+        // Run all three sources concurrently
+        async let tavilyTask = tavilyService.discoverPerson(name: name)
+        async let wikidataTask = fetchWikidataInfo(name: name)
+        async let kgTask = fetchKnowledgeGraphInfo(name: name)
         
-        if !discovery.isVerified {
-            if discovery.isFictional {
+        reportProgress(stage: .discovery, progress: 0.3, message: "Searching Tavily, Wikidata, Knowledge Graph...", sources: 0, events: 0, verified: 0)
+        
+        // Await Tavily (primary - determines verification status)
+        let tavilyDiscovery = try await tavilyTask
+        
+        // Await supplemental sources (non-throwing - failures are tolerated)
+        let wikidataResult = await wikidataTask
+        let kgResult = await kgTask
+        
+        reportProgress(stage: .discovery, progress: 0.7, message: "Merging sources...", sources: 0, events: 0, verified: 0)
+        
+        // Tavily must verify the person exists and is non-fictional
+        if !tavilyDiscovery.isVerified {
+            if tavilyDiscovery.isFictional {
                 throw PipelineError.fictionalCharacter
             }
             throw PipelineError.personNotFound
         }
         
-        reportProgress(stage: .discovery, progress: 1.0, message: "Found \(discovery.sources.count) sources", sources: discovery.sources.count, events: 0, verified: 0)
+        // Merge sources from all providers
+        var allSources = tavilyDiscovery.sources
+        allSources.append(contentsOf: wikidataResult.sources)
+        allSources.append(contentsOf: kgResult.sources)
         
-        return discovery
+        // Build structured context for event generation (Stage 3)
+        var contextParts: [String] = []
+        if !wikidataResult.contextBlock.isEmpty {
+            contextParts.append(wikidataResult.contextBlock)
+        }
+        if !kgResult.contextBlock.isEmpty {
+            contextParts.append(kgResult.contextBlock)
+        }
+        self.structuredContext = contextParts.joined(separator: "\n\n")
+        
+        // Resolve Wikidata labels if we got Q-IDs instead of readable names
+        if !wikidataResult.isEmpty {
+            do {
+                let resolvedFacts = try await wikidataService.resolveLabels(for: wikidataResult.structuredFacts)
+                let resolvedContext = buildResolvedWikidataContext(name: name, facts: resolvedFacts)
+                if !resolvedContext.isEmpty {
+                    // Replace the raw Wikidata context with resolved labels
+                    self.structuredContext = [resolvedContext, kgResult.contextBlock]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: "\n\n")
+                }
+            } catch {
+                #if DEBUG
+                print("ResearchPipeline: Label resolution failed, using raw Q-IDs: \(error.localizedDescription)")
+                #endif
+            }
+        }
+        
+        let sourceCount = allSources.count
+        let providerCount = 1 + (wikidataResult.isEmpty ? 0 : 1) + (kgResult.isEmpty ? 0 : 1)
+        reportProgress(stage: .discovery, progress: 1.0, message: "Found \(sourceCount) sources from \(providerCount) providers", sources: sourceCount, events: 0, verified: 0)
+        
+        return PersonDiscovery(
+            name: tavilyDiscovery.name,
+            isVerified: tavilyDiscovery.isVerified,
+            isFictional: tavilyDiscovery.isFictional,
+            summary: tavilyDiscovery.summary,
+            sources: allSources,
+            rawResults: tavilyDiscovery.rawResults
+        )
+    }
+    
+    // MARK: - Supplemental Source Fetchers
+    
+    /// Fetch Wikidata info with graceful failure (returns empty on error)
+    private func fetchWikidataInfo(name: String) async -> WikidataPersonResult {
+        do {
+            return try await wikidataService.fetchPerson(name: name)
+        } catch {
+            #if DEBUG
+            print("ResearchPipeline: Wikidata fetch failed for '\(name)': \(error.localizedDescription)")
+            #endif
+            return .empty
+        }
+    }
+    
+    /// Fetch Knowledge Graph info with graceful failure (returns empty on error)
+    private func fetchKnowledgeGraphInfo(name: String) async -> KnowledgeGraphResult {
+        do {
+            return try await knowledgeGraphService.searchEntity(name: name)
+        } catch {
+            #if DEBUG
+            print("ResearchPipeline: Knowledge Graph fetch failed for '\(name)': \(error.localizedDescription)")
+            #endif
+            return .empty
+        }
+    }
+    
+    /// Build resolved Wikidata context block with human-readable labels
+    private func buildResolvedWikidataContext(name: String, facts: WikidataStructuredFacts) -> String {
+        var lines: [String] = []
+        lines.append("STRUCTURED BIOGRAPHICAL FACTS (from Wikidata):")
+        lines.append("Subject: \(name)")
+        
+        if let dob = facts.dateOfBirth { lines.append("Date of Birth: \(dob)") }
+        if let dod = facts.dateOfDeath { lines.append("Date of Death: \(dod)") }
+        if let pob = facts.placeOfBirth { lines.append("Place of Birth: \(pob)") }
+        if let pod = facts.placeOfDeath { lines.append("Place of Death: \(pod)") }
+        if !facts.nationalities.isEmpty { lines.append("Nationality: \(facts.nationalities.joined(separator: ", "))") }
+        if !facts.occupations.isEmpty { lines.append("Occupations: \(facts.occupations.joined(separator: ", "))") }
+        if !facts.educatedAt.isEmpty { lines.append("Education: \(facts.educatedAt.joined(separator: ", "))") }
+        if !facts.employers.isEmpty { lines.append("Employers: \(facts.employers.joined(separator: ", "))") }
+        if !facts.positionsHeld.isEmpty { lines.append("Positions Held: \(facts.positionsHeld.joined(separator: ", "))") }
+        if let party = facts.politicalParty { lines.append("Political Party: \(party)") }
+        if !facts.awards.isEmpty { lines.append("Awards: \(facts.awards.joined(separator: ", "))") }
+        if !facts.notableWorks.isEmpty { lines.append("Notable Works: \(facts.notableWorks.joined(separator: ", "))") }
+        if !facts.nominatedFor.isEmpty { lines.append("Nominated For: \(facts.nominatedFor.joined(separator: ", "))") }
+        if !facts.spouses.isEmpty { lines.append("Spouses: \(facts.spouses.joined(separator: ", "))") }
+        if !facts.children.isEmpty { lines.append("Children: \(facts.children.joined(separator: ", "))") }
+        
+        // Only return if we have actual data beyond the header
+        if lines.count <= 2 { return "" }
+        return lines.joined(separator: "\n")
     }
     
     // MARK: - Stage 2: Source Collection
@@ -305,7 +427,18 @@ final class ResearchPipeline {
             "- \(source.title) [\(source.sourceType.displayName)] (\(source.url))"
         }.joined(separator: "\n")
         
-        let fullContext = """
+        // Prepend structured data from Wikidata/Knowledge Graph if available
+        var fullContext = ""
+        if !structuredContext.isEmpty {
+            fullContext += """
+            \(structuredContext)
+            
+            ---
+            
+            """
+        }
+        
+        fullContext += """
         AVAILABLE AUTHORITATIVE SOURCES:
         \(sourceMetadata)
         
