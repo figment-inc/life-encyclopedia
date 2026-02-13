@@ -162,13 +162,14 @@ struct Source: Identifiable, Codable, Equatable, Hashable {
     
     /// Create a Source from a TavilySearchResult
     static func fromTavilyResult(_ result: TavilySearchResult, reliabilityScore: Double = 0.5, sourceType: SourceType = .unknown) -> Source {
-        Source(
+        let cleaned = CitationDeepLinkBuilder.cleanRawContent(result.content)
+        return Source(
             title: result.title,
             url: result.url,
             sourceType: sourceType,
             reliabilityScore: reliabilityScore,
-            contentSnippet: result.content,
-            relevantQuote: result.content
+            contentSnippet: cleaned.isEmpty ? nil : cleaned,
+            relevantQuote: cleaned.isEmpty ? nil : cleaned
         )
     }
     

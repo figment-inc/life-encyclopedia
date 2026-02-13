@@ -24,6 +24,8 @@ struct HomeView: View {
     @State private var pendingNavigationPerson: Person?
     
     @State private var filterState = FilterState()
+    @State private var isSearchVisible = false
+    @State private var isFilterVisible = false
     
     private let supabaseService = SupabaseService()
     private let pageSize = 30
@@ -46,7 +48,9 @@ struct HomeView: View {
                         filterState: filterState,
                         resultCount: visiblePeople.count,
                         totalCount: totalCount,
-                        isLoading: isInitialLoading || isLoadingMore
+                        isLoading: isInitialLoading || isLoadingMore,
+                        isSearchVisible: $isSearchVisible,
+                        isFilterVisible: $isFilterVisible
                     )
                 }
                 
@@ -63,6 +67,38 @@ struct HomeView: View {
                 }
             }
             .toolbar {
+                ToolbarItemGroup(placement: .topBarLeading) {
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                            isSearchVisible.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                            .fontWeight(.medium)
+                            .foregroundStyle(
+                                !filterState.normalizedSearchText.isEmpty ? Color.accentColor :
+                                isSearchVisible ? Color.accentColor : .primary
+                            )
+                    }
+                    .accessibilityLabel("Toggle search")
+                    .accessibilityHint(isSearchVisible ? "Search bar is visible. Double tap to hide." : "Search bar is hidden. Double tap to show.")
+                    
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                            isFilterVisible.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isFilterVisible ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                            .fontWeight(.medium)
+                            .foregroundStyle(
+                                filterState.hasActiveFilters ? Color.accentColor :
+                                isFilterVisible ? Color.accentColor : .primary
+                            )
+                    }
+                    .accessibilityLabel("Toggle filters")
+                    .accessibilityHint(isFilterVisible ? "Filters are visible. Double tap to hide." : "Filters are hidden. Double tap to show.")
+                }
+                
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showCreateSheet = true

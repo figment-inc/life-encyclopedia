@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		7B11D9162F33D46E00DA42E7 /* life-encyclopedia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "life-encyclopedia.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		7B11D9302F33D47000DA42E7 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -32,6 +33,7 @@
 		7B11D90D2F33D46E00DA42E7 = {
 			isa = PBXGroup;
 			children = (
+				7B11D9302F33D47000DA42E7 /* Secrets.xcconfig */,
 				7B11D9182F33D46E00DA42E7 /* life-encyclopedia */,
 				7B11D9172F33D46E00DA42E7 /* Products */,
 			);
@@ -52,6 +54,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7B11D9212F33D46F00DA42E7 /* Build configuration list for PBXNativeTarget "life-encyclopedia" */;
 			buildPhases = (
+				7B11D9312F33D47000DA42E7 /* Generate Configuration.plist */,
 				7B11D9122F33D46E00DA42E7 /* Sources */,
 				7B11D9132F33D46E00DA42E7 /* Frameworks */,
 				7B11D9142F33D46E00DA42E7 /* Resources */,
@@ -114,6 +117,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		7B11D9312F33D47000DA42E7 /* Generate Configuration.plist */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Secrets.xcconfig",
+			);
+			name = "Generate Configuration.plist";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/life-encyclopedia/Configuration.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cat > \"${SRCROOT}/life-encyclopedia/Configuration.plist\" << PLIST\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>SUPABASE_URL</key>\n\t<string>${SUPABASE_URL}</string>\n\t<key>SUPABASE_ANON_KEY</key>\n\t<string>${SUPABASE_ANON_KEY}</string>\n\t<key>ANTHROPIC_API_KEY</key>\n\t<string>${ANTHROPIC_API_KEY}</string>\n\t<key>TAVILY_API_KEY</key>\n\t<string>${TAVILY_API_KEY}</string>\n\t<key>GOOGLE_API_KEY</key>\n\t<string>${GOOGLE_API_KEY}</string>\n</dict>\n</plist>\nPLIST\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		7B11D9122F33D46E00DA42E7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -127,6 +154,7 @@
 /* Begin XCBuildConfiguration section */
 		7B11D91F2F33D46F00DA42E7 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7B11D9302F33D47000DA42E7 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -160,7 +188,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = AQRF3SM6NV;
+				DEVELOPMENT_TEAM = QU8R2P5MVQ;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -191,6 +219,7 @@
 		};
 		7B11D9202F33D46F00DA42E7 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7B11D9302F33D47000DA42E7 /* Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -224,7 +253,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = AQRF3SM6NV;
+				DEVELOPMENT_TEAM = QU8R2P5MVQ;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -253,9 +282,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = AQRF3SM6NV;
+				DEVELOPMENT_TEAM = QU8R2P5MVQ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -266,7 +296,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.spaces.life-encyclopedia";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.figment.lines";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -285,9 +315,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = AQRF3SM6NV;
+				DEVELOPMENT_TEAM = QU8R2P5MVQ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -298,7 +329,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.spaces.life-encyclopedia";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.figment.lines";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

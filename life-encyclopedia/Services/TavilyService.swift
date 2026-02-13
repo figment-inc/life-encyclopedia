@@ -439,6 +439,47 @@ final class TavilyService {
     
     // MARK: - Private Helpers
 
+    /// Strip common Wikipedia / web artifacts from raw content so it reads as clean prose.
+    private func cleanWikipediaContent(_ content: String) -> String {
+        var text = content
+
+        // Remove markdown-style links: [text](url) -> text
+        if let regex = try? NSRegularExpression(pattern: "\\[([^\\]]+)\\]\\([^)]*\\)", options: []) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1")
+        }
+
+        // Remove double-bracket wiki links: [[text]] -> text  or  [[target|text]] -> text
+        if let regex = try? NSRegularExpression(pattern: "\\[\\[(?:[^|\\]]*\\|)?([^\\]]+)\\]\\]", options: []) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1")
+        }
+
+        // Remove reference markers: [1], [2], [citation needed], [a], etc.
+        if let regex = try? NSRegularExpression(pattern: "\\[(?:\\d+|[a-z]|citation needed|clarification needed|unreliable source)\\]", options: .caseInsensitive) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+        }
+
+        // Remove URL fragments like _Kennedy#bodyContent) or (#section)
+        if let regex = try? NSRegularExpression(pattern: "[_#][A-Za-z0-9_#/]+\\)?", options: []) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+        }
+
+        // Remove bare URLs
+        if let regex = try? NSRegularExpression(pattern: "https?://\\S+", options: []) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+        }
+
+        // Remove leftover empty parentheses or brackets
+        text = text.replacingOccurrences(of: "()", with: "")
+        text = text.replacingOccurrences(of: "[]", with: "")
+
+        // Collapse excessive whitespace
+        if let regex = try? NSRegularExpression(pattern: "\\s{2,}", options: []) {
+            text = regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: " ")
+        }
+
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func candidateName(from result: TavilySearchResult) -> String? {
         let separators = [" - ", " | ", " — ", " – ", ":"]
         let trimmedTitle = result.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -476,6 +517,36 @@ final class TavilyService {
         let lowercased = trimmed.lowercased()
         if disallowedKeywords.contains(where: { lowercased.contains($0) }) {
             return false
+        }
+
+        // Reject single-word generic article titles that are not person names
+        let genericTitles: Set<String> = [
+            "biography", "history", "autobiography", "discography",
+            "filmography", "bibliography", "obituary", "genealogy",
+            "encyclopedia", "dictionary", "anthology", "memoir",
+            "portrait", "chronicle", "narrative", "journal",
+            "music", "album", "song", "film", "novel", "book"
+        ]
+        if genericTitles.contains(lowercased) {
+            return false
+        }
+
+        // Single-word "names" are almost never person names (except rare mononyms).
+        // Require at least two words for typical person names.
+        let wordCount = trimmed.split(separator: " ").count
+        if wordCount == 1 {
+            // Allow well-known mononyms (stage names, ancient figures)
+            let knownMononyms: Set<String> = [
+                "aristotle", "plato", "socrates", "homer", "confucius",
+                "cleopatra", "michelangelo", "raphael", "caravaggio",
+                "madonna", "beyoncé", "prince", "drake", "adele", "rihanna",
+                "voltaire", "molière", "napoleon", "charlemagne", "rembrandt",
+                "cher", "bono", "shakira", "pele", "ronaldinho", "neymar",
+                "moses", "muhammad", "buddha", "zoroaster", "avicenna"
+            ]
+            if !knownMononyms.contains(lowercased) {
+                return false
+            }
         }
 
         // Reject names with parenthetical qualifiers that indicate fictional/non-person entries
@@ -586,7 +657,7 @@ final class TavilyService {
     }
 
     private func summarizeCandidateContent(_ content: String) -> String {
-        let cleaned = content
+        let cleaned = cleanWikipediaContent(content)
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -597,10 +668,20 @@ final class TavilyService {
 
     /// Extract a lifespan string like "1452 – 1519" from content.
     /// Returns a normalized, display-ready string with proper en-dashes.
+    /// Searches the opening portion of the content first (where Wikipedia puts birth/death years),
+    /// then falls back to the full content. Includes a sanity check against non-lifespan year ranges.
     private func extractLifespan(from content: String) -> String? {
-        // Ordered patterns: most specific first
+        // Search the opening text first (Wikipedia puts lifespan in first sentence),
+        // then fall back to the full content.
+        let openingEndIndex = content.index(content.startIndex, offsetBy: min(300, content.count))
+        let openingText = String(content[..<openingEndIndex])
+        let searchScopes = [openingText, content]
+
+        // Ordered patterns: most specific / reliable first
         let patterns: [(pattern: String, format: LifespanFormat)] = [
-            // (1452–1519) or (1452-1519)
+            // Wikipedia-style full-date parenthetical: (May 29, 1917 – November 22, 1963)
+            ("\\([A-Z][a-z]+\\s+\\d{1,2},?\\s+(\\d{3,4})\\s*[–\\-—]\\s*[A-Z][a-z]+\\s+\\d{1,2},?\\s+(\\d{3,4})\\)", .range),
+            // (1452–1519) or (1452-1519) — bare year range in parentheses
             ("\\(\\s*(\\d{3,4})\\s*[–\\-—]\\s*(\\d{3,4})\\s*\\)", .range),
             // (1980–present)
             ("\\(\\s*(\\d{3,4})\\s*[–\\-—]\\s*present\\s*\\)", .birthToPresent),
@@ -612,38 +693,52 @@ final class TavilyService {
             ("\\b(\\d{3,4})\\s*(BCE?|CE|BC|AD)\\s*[–\\-—]\\s*(\\d{3,4})\\s*(BCE?|CE|BC|AD)?\\b", .eraRange)
         ]
 
-        for (pattern, format) in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
-            let range = NSRange(content.startIndex..., in: content)
-            guard let match = regex.firstMatch(in: content, range: range) else { continue }
+        for scope in searchScopes {
+            for (pattern, format) in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+                let range = NSRange(scope.startIndex..., in: scope)
+                guard let match = regex.firstMatch(in: scope, range: range) else { continue }
 
-            switch format {
-            case .range:
-                if let r1 = Range(match.range(at: 1), in: content),
-                   let r2 = Range(match.range(at: 2), in: content) {
-                    return "\(content[r1]) \u{2013} \(content[r2])"
-                }
-            case .birthToPresent:
-                if let r1 = Range(match.range(at: 1), in: content) {
-                    return "\(content[r1]) \u{2013} present"
-                }
-            case .birthOnly:
-                if let r1 = Range(match.range(at: 1), in: content) {
-                    return "b. \(content[r1])"
-                }
-            case .eraRange:
-                if let r1 = Range(match.range(at: 1), in: content),
-                   let r2 = Range(match.range(at: 2), in: content),
-                   let r3 = Range(match.range(at: 3), in: content) {
-                    let era1 = String(content[r2]).uppercased()
-                    let era2Str: String
-                    if match.range(at: 4).location != NSNotFound,
-                       let r4 = Range(match.range(at: 4), in: content) {
-                        era2Str = " \(String(content[r4]).uppercased())"
-                    } else {
-                        era2Str = ""
+                switch format {
+                case .range:
+                    if let r1 = Range(match.range(at: 1), in: scope),
+                       let r2 = Range(match.range(at: 2), in: scope) {
+                        let year1 = String(scope[r1])
+                        let year2 = String(scope[r2])
+
+                        // Sanity check: reject suspiciously short ranges (< 15 years)
+                        // that are likely career spans, not lifespans
+                        if let y1 = Int(year1), let y2 = Int(year2) {
+                            let span = y2 - y1
+                            if span < 15 && y1 > 1800 {
+                                continue
+                            }
+                        }
+
+                        return "\(year1) \u{2013} \(year2)"
                     }
-                    return "\(content[r1]) \(era1) \u{2013} \(content[r3])\(era2Str)"
+                case .birthToPresent:
+                    if let r1 = Range(match.range(at: 1), in: scope) {
+                        return "\(scope[r1]) \u{2013} present"
+                    }
+                case .birthOnly:
+                    if let r1 = Range(match.range(at: 1), in: scope) {
+                        return "b. \(scope[r1])"
+                    }
+                case .eraRange:
+                    if let r1 = Range(match.range(at: 1), in: scope),
+                       let r2 = Range(match.range(at: 2), in: scope),
+                       let r3 = Range(match.range(at: 3), in: scope) {
+                        let era1 = String(scope[r2]).uppercased()
+                        let era2Str: String
+                        if match.range(at: 4).location != NSNotFound,
+                           let r4 = Range(match.range(at: 4), in: scope) {
+                            era2Str = " \(String(scope[r4]).uppercased())"
+                        } else {
+                            era2Str = ""
+                        }
+                        return "\(scope[r1]) \(era1) \u{2013} \(scope[r3])\(era2Str)"
+                    }
                 }
             }
         }
@@ -660,7 +755,7 @@ final class TavilyService {
 
     /// Extract the first meaningful sentence that describes a person.
     private func extractPersonDescription(from content: String, name: String) -> String {
-        let cleaned = content
+        let cleaned = cleanWikipediaContent(content)
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)

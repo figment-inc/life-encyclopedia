@@ -3,6 +3,14 @@
 .env.local
 .env.*.local
 
+# API keys / secrets (bundled plist with real values)
+life-encyclopedia/Configuration.plist
+Secrets.xcconfig
+
+# App Store Connect API key and release credentials
+scripts/.env.release
+*.p8
+
 # Xcode
 build/
 DerivedData/

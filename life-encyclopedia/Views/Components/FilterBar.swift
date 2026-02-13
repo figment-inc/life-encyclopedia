@@ -13,7 +13,10 @@ struct FilterBar: View {
     let resultCount: Int
     let totalCount: Int?
     let isLoading: Bool
+    @Binding var isSearchVisible: Bool
+    @Binding var isFilterVisible: Bool
     
+    @FocusState private var isSearchFieldFocused: Bool
     @State private var showEraMenu = false
     @State private var showDomainMenu = false
     @State private var showRegionMenu = false
@@ -21,87 +24,120 @@ struct FilterBar: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            searchBarRow
+            if isSearchVisible {
+                searchBarRow
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .top).combined(with: .opacity),
+                            removal: .opacity.combined(with: .move(edge: .top))
+                        )
+                    )
+            }
             
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Spacing.xs) {
-                    FilterDropdown(
-                        label: eraLabel,
-                        icon: "calendar",
-                        isActive: !filterState.selectedEras.isEmpty
-                    ) {
-                        showEraMenu = true
-                    }
-                    .popover(isPresented: $showEraMenu) {
-                        EraPickerView(selected: $filterState.selectedEras)
-                            .presentationCompactAdaptation(.popover)
-                    }
-                    
-                    FilterDropdown(
-                        label: domainLabel,
-                        icon: "square.grid.2x2",
-                        isActive: !filterState.selectedDomains.isEmpty
-                    ) {
-                        showDomainMenu = true
-                    }
-                    .popover(isPresented: $showDomainMenu) {
-                        DomainPickerView(selected: $filterState.selectedDomains)
-                            .presentationCompactAdaptation(.popover)
-                    }
-                    
-                    FilterDropdown(
-                        label: regionLabel,
-                        icon: "globe",
-                        isActive: !filterState.selectedRegions.isEmpty
-                    ) {
-                        showRegionMenu = true
-                    }
-                    .popover(isPresented: $showRegionMenu) {
-                        RegionPickerView(selected: $filterState.selectedRegions)
-                            .presentationCompactAdaptation(.popover)
-                    }
-                    
-                    Button {
-                        showRefineSheet = true
-                    } label: {
-                        HStack(spacing: Spacing.xs) {
-                            Image(systemName: "slider.horizontal.3")
-                                .font(.system(size: 14, weight: .medium))
-                            
-                            Text(refineLabel)
-                                .font(.labelMedium)
-                                .lineLimit(1)
+            if isFilterVisible {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Spacing.xs) {
+                        FilterDropdown(
+                            label: eraLabel,
+                            icon: "calendar",
+                            isActive: !filterState.selectedEras.isEmpty
+                        ) {
+                            showEraMenu = true
                         }
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, Spacing.xs)
-                        .background(refineIsActive ? Color.accentColor.opacity(0.12) : Color.surfaceSecondary)
-                        .foregroundStyle(refineIsActive ? Color.accentColor : Color.textPrimary)
-                        .clipShape(Capsule())
+                        .popover(isPresented: $showEraMenu) {
+                            EraPickerView(selected: $filterState.selectedEras)
+                                .presentationCompactAdaptation(.popover)
+                        }
+                        
+                        FilterDropdown(
+                            label: domainLabel,
+                            icon: "square.grid.2x2",
+                            isActive: !filterState.selectedDomains.isEmpty
+                        ) {
+                            showDomainMenu = true
+                        }
+                        .popover(isPresented: $showDomainMenu) {
+                            DomainPickerView(selected: $filterState.selectedDomains)
+                                .presentationCompactAdaptation(.popover)
+                        }
+                        
+                        FilterDropdown(
+                            label: regionLabel,
+                            icon: "globe",
+                            isActive: !filterState.selectedRegions.isEmpty
+                        ) {
+                            showRegionMenu = true
+                        }
+                        .popover(isPresented: $showRegionMenu) {
+                            RegionPickerView(selected: $filterState.selectedRegions)
+                                .presentationCompactAdaptation(.popover)
+                        }
+                        
+                        Button {
+                            showRefineSheet = true
+                        } label: {
+                            HStack(spacing: Spacing.xs) {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.system(size: 14, weight: .medium))
+                                
+                                Text(refineLabel)
+                                    .font(.labelMedium)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, Spacing.xs)
+                            .background(refineIsActive ? Color.accentColor.opacity(0.12) : Color.surfaceSecondary)
+                            .foregroundStyle(refineIsActive ? Color.accentColor : Color.textPrimary)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, Spacing.screenHorizontal)
+                    .padding(.vertical, Spacing.xs)
                 }
-                .padding(.horizontal, Spacing.screenHorizontal)
-                .padding(.vertical, Spacing.xs)
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    )
+                )
             }
             
             if filterState.hasActiveFilters {
                 activeFilterPills
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .top).combined(with: .opacity),
+                            removal: .opacity
+                        )
+                    )
             }
             
             resultsRow
                 .padding(.horizontal, Spacing.screenHorizontal)
                 .padding(.bottom, Spacing.xs)
         }
+        .clipped()
         .background(Color.surfacePrimary)
         .overlay(alignment: .bottom) {
             Divider()
                 .opacity(0.45)
         }
-        .animation(.spring(response: 0.25, dampingFraction: 0.9), value: filterState.hasActiveFilters)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82, blendDuration: 0), value: isSearchVisible)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82, blendDuration: 0), value: isFilterVisible)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85, blendDuration: 0), value: filterState.hasActiveFilters)
         .sheet(isPresented: $showRefineSheet) {
             RefineFiltersSheet(filterState: filterState)
                 .presentationDetents([.medium, .large])
+        }
+        .onChange(of: isSearchVisible) { _, isVisible in
+            if isVisible {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isSearchFieldFocused = true
+                }
+            } else {
+                isSearchFieldFocused = false
+            }
         }
     }
     
@@ -160,6 +196,7 @@ struct FilterBar: View {
                     .foregroundStyle(.textTertiary)
                 
                 TextField("Search by name", text: $filterState.searchText)
+                    .focused($isSearchFieldFocused)
                     .textInputAutocapitalization(.words)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
@@ -623,15 +660,30 @@ struct RegionPickerView: View {
 #Preview("Filter Bar") {
     struct PreviewWrapper: View {
         @State private var filterState = FilterState()
+        @State private var isSearchVisible = true
+        @State private var isFilterVisible = true
         
         var body: some View {
             VStack {
-                FilterBar(filterState: filterState, resultCount: 16, totalCount: 80, isLoading: false)
+                FilterBar(
+                    filterState: filterState,
+                    resultCount: 16,
+                    totalCount: 80,
+                    isLoading: false,
+                    isSearchVisible: $isSearchVisible,
+                    isFilterVisible: $isFilterVisible
+                )
                 
                 Spacer()
                 
                 // Test buttons
                 VStack(spacing: 10) {
+                    Button("Toggle Search") {
+                        isSearchVisible.toggle()
+                    }
+                    Button("Toggle Filters") {
+                        isFilterVisible.toggle()
+                    }
                     Button("Add Science Filter") {
                         filterState.selectedDomains.insert(.science)
                     }

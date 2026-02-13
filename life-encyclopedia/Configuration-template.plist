@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Configuration-template.plist
+  
+  Copy this file to Configuration.plist and fill in your actual API keys.
+  Configuration.plist is gitignored and will NOT be committed.
+  
+  cp Configuration-template.plist Configuration.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>ANTHROPIC_API_KEY</key>
+	<string>YOUR_ANTHROPIC_API_KEY_HERE</string>
+	<key>TAVILY_API_KEY</key>
+	<string>YOUR_TAVILY_API_KEY_HERE</string>
+	<key>GOOGLE_API_KEY</key>
+	<string>YOUR_GOOGLE_API_KEY_HERE</string>
+	<key>SUPABASE_URL</key>
+	<string>YOUR_SUPABASE_URL_HERE</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>YOUR_SUPABASE_ANON_KEY_HERE</string>
+</dict>
+</plist>

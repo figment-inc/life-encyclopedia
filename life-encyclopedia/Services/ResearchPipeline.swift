@@ -219,11 +219,37 @@ final class ResearchPipeline {
         
         try checkCancelled()
         
-        // Stage 5: Enrichment
+        // Stage 5: Enrichment + Filter Metadata (run in parallel)
+        // Filter metadata only needs the person's name/summary/events and source context,
+        // NOT the enriched citation sources, so it can run concurrently with citation enrichment.
         reportProgress(stage: .enrichment, progress: 0.0, message: "Enriching citations...", sources: collectedSources.count, events: verifiedEvents.count, verified: 0)
-        let enrichedEvents = try await enrichCitations(events: verifiedEvents, personName: name, config: config)
         
-        // Build initial person for filter enrichment
+        let preEnrichmentPerson = Person(
+            name: generatedPerson.name,
+            birthDate: generatedPerson.birthDate,
+            deathDate: generatedPerson.deathDate,
+            summary: generatedPerson.summary,
+            events: verifiedEvents
+        )
+        let sourceContext = collectedSources.prefix(5).compactMap { $0.contentSnippet }.joined(separator: "\n")
+        let filterService = self.filterEnrichmentService
+        
+        async let enrichedEventsTask = enrichCitations(events: verifiedEvents, personName: name, config: config)
+        async let filterMetadataTask: FilterMetadata? = {
+            do {
+                return try await filterService.enrichPerson(preEnrichmentPerson, additionalContext: sourceContext)
+            } catch {
+                #if DEBUG
+                print("Filter enrichment failed: \(error.localizedDescription)")
+                #endif
+                return nil
+            }
+        }()
+        
+        let enrichedEvents = try await enrichedEventsTask
+        let filterMetadata = await filterMetadataTask
+        
+        // Build final person with enriched events and filter metadata
         var finalPerson = Person(
             name: generatedPerson.name,
             birthDate: generatedPerson.birthDate,
@@ -232,19 +258,8 @@ final class ResearchPipeline {
             events: enrichedEvents
         )
         
-        // Enrich with filter metadata using AI
-        reportProgress(stage: .enrichment, progress: 0.8, message: "Classifying for filters...", sources: collectedSources.count, events: enrichedEvents.count, verified: 0)
-        
-        do {
-            // Build additional context from sources for better classification
-            let sourceContext = collectedSources.prefix(5).compactMap { $0.contentSnippet }.joined(separator: "\n")
-            let filterMetadata = try await filterEnrichmentService.enrichPerson(finalPerson, additionalContext: sourceContext)
+        if let filterMetadata {
             finalPerson = finalPerson.withFilterMetadata(filterMetadata)
-        } catch {
-            // Filter enrichment is optional - log but don't fail the pipeline
-            #if DEBUG
-            print("Filter enrichment failed: \(error.localizedDescription)")
-            #endif
         }
         
         let summary = buildResearchSummary(events: enrichedEvents, sources: collectedSources)
@@ -563,8 +578,6 @@ final class ResearchPipeline {
     // MARK: - Stage 5: Enrichment
     
     private func enrichCitations(events: [HistoricalEvent], personName: String, config: Configuration) async throws -> [HistoricalEvent] {
-        var enrichedEvents: [HistoricalEvent] = []
-        
         // Determine which events need enrichment (events with few sources)
         let eventsToEnrich: [HistoricalEvent]
         if config.enrichLowConfidenceOnly {
@@ -574,50 +587,75 @@ final class ResearchPipeline {
         }
         
         let totalToEnrich = eventsToEnrich.count
-        var enriched = 0
         
-        for event in events {
-            if eventsToEnrich.contains(where: { $0.id == event.id }) {
-                // Try to find additional sources
-                do {
-                    let additionalSources = try await tavilyService.findAuthoritativeSources(
-                        query: "\(personName) \(event.title) \(event.date)",
-                        limit: config.maxSourcesPerEvent - event.sources.count
-                    )
-                    
-                    // Merge sources
-                    var allSources = event.sources
-                    for source in additionalSources {
-                        if !allSources.contains(where: { $0.url == source.url }) {
-                            allSources.append(source)
+        // Batch-enrich events in parallel (groups of 5 to avoid rate limiting)
+        var enrichmentResults: [UUID: [Source]] = [:]
+        let batchSize = 5
+        let tavily = self.tavilyService
+        
+        for batchStart in stride(from: 0, to: eventsToEnrich.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, eventsToEnrich.count)
+            let batch = Array(eventsToEnrich[batchStart..<batchEnd])
+            
+            try await withThrowingTaskGroup(of: (UUID, [Source]?).self) { group in
+                for event in batch {
+                    let query = "\(personName) \(event.title) \(event.date)"
+                    let limit = config.maxSourcesPerEvent - event.sources.count
+                    group.addTask {
+                        do {
+                            let sources = try await tavily.findAuthoritativeSources(
+                                query: query,
+                                limit: limit
+                            )
+                            return (event.id, sources)
+                        } catch {
+                            // Individual enrichment failure is non-fatal
+                            return (event.id, nil)
                         }
                     }
-                    
-                    // Create enriched event with additional sources
-                    let enrichedEvent = HistoricalEvent(
-                        id: event.id,
-                        date: event.date,
-                        title: event.title,
-                        description: event.description,
-                        citation: event.citation,
-                        sourceURL: event.sourceURL,
-                        eventType: event.eventType,
-                        datePrecision: event.datePrecision,
-                        sources: prepareCitationSources(sourceFilter.topSources(allSources, limit: config.maxSourcesPerEvent))
-                    )
-                    enrichedEvents.append(enrichedEvent)
-                    
-                } catch {
-                    // Keep original on error
-                    enrichedEvents.append(eventWithPreparedSources(event))
                 }
-                
-                enriched += 1
-                let progress = Double(enriched) / Double(max(1, totalToEnrich))
-                reportProgress(stage: .enrichment, progress: progress, message: "Enriched \(enriched)/\(totalToEnrich) events", sources: 0, events: events.count, verified: 0)
-            } else {
-                enrichedEvents.append(eventWithPreparedSources(event))
+                for try await (eventID, sources) in group {
+                    if let sources {
+                        enrichmentResults[eventID] = sources
+                    }
+                }
             }
+            
+            // Small delay between batches to avoid rate limiting
+            if batchEnd < eventsToEnrich.count {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+            
+            let enriched = min(batchEnd, totalToEnrich)
+            let progress = Double(enriched) / Double(max(1, totalToEnrich))
+            reportProgress(stage: .enrichment, progress: progress, message: "Enriched \(enriched)/\(totalToEnrich) events", sources: 0, events: events.count, verified: 0)
+        }
+        
+        // Build final enriched events list preserving original order
+        let enrichedEvents: [HistoricalEvent] = events.map { event in
+            guard let additionalSources = enrichmentResults[event.id] else {
+                return eventWithPreparedSources(event)
+            }
+            
+            // Merge sources, deduplicating by URL
+            var allSources = event.sources
+            for source in additionalSources {
+                if !allSources.contains(where: { $0.url == source.url }) {
+                    allSources.append(source)
+                }
+            }
+            
+            return HistoricalEvent(
+                id: event.id,
+                date: event.date,
+                title: event.title,
+                description: event.description,
+                citation: event.citation,
+                sourceURL: event.sourceURL,
+                eventType: event.eventType,
+                datePrecision: event.datePrecision,
+                sources: prepareCitationSources(sourceFilter.topSources(allSources, limit: config.maxSourcesPerEvent))
+            )
         }
         
         return enrichedEvents

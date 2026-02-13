@@ -332,20 +332,22 @@ struct CreateView: View {
                     } label: {
                         HStack(alignment: .top, spacing: Spacing.sm) {
                             VStack(alignment: .leading, spacing: Spacing.xs) {
-                                // Name
-                                Text(candidate.name)
-                                    .font(.system(size: 17, weight: .semibold, design: .serif))
-                                    .foregroundStyle(.textPrimary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                // Row 1: Name (left) + Years (right)
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(candidate.name)
+                                        .font(.system(size: 17, weight: .semibold, design: .serif))
+                                        .foregroundStyle(.textPrimary)
 
-                                // Years
-                                if let years = candidate.years, !years.isEmpty {
-                                    Text(years)
-                                        .font(.system(size: 13, weight: .regular, design: .serif))
-                                        .foregroundStyle(.textSecondary)
+                                    Spacer()
+
+                                    if let years = candidate.years, !years.isEmpty {
+                                        Text(years)
+                                            .font(.system(size: 13, weight: .regular, design: .serif))
+                                            .foregroundStyle(.textSecondary)
+                                    }
                                 }
 
-                                // Description
+                                // Row 2: Description
                                 Text(candidateBodyText(for: candidate))
                                     .font(.bodyMediumSerif)
                                     .foregroundStyle(.textTertiary)
@@ -561,6 +563,10 @@ struct CreateView: View {
         errorMessage = nil
         pipelineProgress = nil
         
+        // Start database existence check early — runs in parallel with the pipeline
+        // since it only needs the person name (available from verification)
+        async let existingPersonCheck = supabaseService.findExistingPerson(matchingName: verification.name)
+        
         var generatedPerson: Person?
         
         if useAdvancedPipeline {
@@ -601,9 +607,10 @@ struct CreateView: View {
         }
         
         // Auto-save to Supabase and notify parent
+        // The DB existence check was started at the top and has been running in parallel
         if let person = generatedPerson {
             do {
-                if let existingPerson = try await supabaseService.findExistingPerson(matchingName: person.name) {
+                if let existingPerson = try await existingPersonCheck {
                     onPersonCreated?(existingPerson)
                 } else {
                     let savedPerson = try await supabaseService.savePerson(person)
@@ -681,10 +688,31 @@ struct CreateView: View {
     }
 
     private func normalizedCandidateSummarySentence(_ summary: String) -> String {
-        let cleanedSummary = summary
+        var cleanedSummary = summary
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Strip leftover Wikipedia artifacts (URL fragments, reference markers, bare URLs)
+        let artifactPatterns: [(String, String)] = [
+            ("[_#][A-Za-z0-9_#/]+\\)?", ""),           // URL fragments
+            ("\\[(?:\\d+|[a-z])\\]", ""),                // [1], [a]
+            ("https?://\\S+", ""),                       // bare URLs
+            ("\\(\\)", ""),                               // empty parens
+        ]
+        for (pattern, replacement) in artifactPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                cleanedSummary = regex.stringByReplacingMatches(
+                    in: cleanedSummary,
+                    range: NSRange(cleanedSummary.startIndex..., in: cleanedSummary),
+                    withTemplate: replacement
+                )
+            }
+        }
+        cleanedSummary = cleanedSummary
+            .replacingOccurrences(of: "\\s{2,}", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         guard !cleanedSummary.isEmpty else { return "" }
 
         let endPunctuation = CharacterSet(charactersIn: ".!?")
